@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Race Clock</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background: #0b0f14; color: #e8eef7; }
+    .wrap { min-height: 100vh; display: grid; place-items: center; padding: 3vh 4vw; }
+    .card { width: min(1100px, 96vw); }
+    .row { display: grid; grid-template-columns: 1fr; gap: 1.2rem; }
+    .label { letter-spacing: .12em; opacity: .75; font-weight: 700; font-size: 1.2rem; }
+    .big { font-weight: 800; font-size: clamp(56px, 10vw, 140px); line-height: 1; }
+    .mid { font-weight: 800; font-size: clamp(34px, 5vw, 72px); line-height: 1.1; }
+    .small { font-size: clamp(18px, 2.3vw, 28px); opacity: .9; }
+    .muted { opacity: .7; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+    @media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
+    .box { padding: 1.2rem 1.4rem; border-radius: 18px; background: rgba(255,255,255,.06); }
+    .box.raceBox { background: rgba(255, 70, 70, .14); border: 1px solid rgba(255, 70, 70, .25); }
+    .error { color: #ff9c9c; font-weight: 700; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+    @media (max-width: 920px) { .split { grid-template-columns: 1fr; } }
+    .kpi { display:flex; align-items:baseline; gap: 1rem; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="row">
+        <div class="grid2">
+          <div class="box">
+            <div class="label">CURRENT TIME</div>
+            <div id="now" class="mid">--:--:--</div>
+            <div id="tz" class="small muted"></div>
+          </div>
+
+          <div class="box">
+            <div class="label">NEXT TASK TIME</div>
+            <div id="nextTaskTime" class="mid">--:--</div>
+            <div id="nextTaskName" class="small">—</div>
+          </div>
+        </div>
+
+        <div class="split">
+          <div class="box">
+            <div class="label">COUNTDOWN TO NEXT TASK</div>
+            <div id="taskCountdownTitle" class="small muted" style="margin-bottom:.35rem;"></div>
+            <div class="kpi">
+              <div id="taskCountdown" class="big">--:--</div>
+            </div>
+            <div id="active" class="small muted"></div>
+            <div id="msg" class="small error"></div>
+          </div>
+
+          <div class="box raceBox">
+            <div class="label">COUNTDOWN TO NEXT RACE</div>
+            <div id="raceCountdownTitle" class="small muted" style="margin-bottom:.35rem;"></div>
+            <div class="kpi">
+              <div id="raceCountdown" class="big">--:--</div>
+            </div>
+            <div class="small muted" id="raceMeta"></div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="box">
+            <div class="label">UP NEXT (TASKS)</div>
+            <div id="upNextTasks" class="small">Loading…</div>
+          </div>
+          <div class="box raceBox">
+            <div class="label">UP NEXT (RACES)</div>
+            <div id="upNextRaces" class="small">Loading…</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+<script>
+/**
+ * CONFIG
+ * Google Sheets published CSV URL.
+ * - column A: time (e.g., 13:22 or 1:22 PM)
+ * - column C: name/description
+ * Event date is stored in cell C21.
+ */
+const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=801285555&single=true&output=csv";
+
+// Cache-busting per fetch (important: Date.now() must be evaluated each time)
+function csvUrl(){
+  return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
+}
+
+const COL_TIME = 0;
+const COL_NAME = 2;
+
+// Date is stored in cell C21 in the CSV (1-based). Convert to 0-based indices:
+const DATE_CELL_ROW = 21 - 1; // 20
+const DATE_CELL_COL = 3 - 1;  // 2  (C)
+
+// Refresh schedule from CSV every N seconds (UI updates every second regardless)
+const SCHEDULE_REFRESH_SECONDS = 10;
+
+let schedule = []; // { minutesOfDay, timeStr, name }
+let lastFetchMs = 0;
+let eventDateKey = null; // YYYY-MM-DD from C21
+
+function pad2(n){ return String(n).padStart(2,"0"); }
+
+function formatHMS(d){
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function formatHMfromMinutes(m){
+  const hh = Math.floor(m / 60) % 24;
+  const mm = m % 60;
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function formatCountdown(deltaSec){
+  const hh = Math.floor(deltaSec / 3600);
+  const mm = Math.floor((deltaSec % 3600) / 60);
+  const ss = deltaSec % 60;
+  return hh > 0 ? `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}` : `${pad2(mm)}:${pad2(ss)}`;
+}
+
+function dateKeyLocal(d){
+  // local date as YYYY-MM-DD
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+}
+
+function parseDateToKey(s){
+  if (s === undefined || s === null) return null;
+  const raw = String(s).trim();
+  if (!raw) return null;
+
+  // ISO: YYYY-MM-DD (recommended)
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  // AU-style: DD/MM/YYYY
+  const dmy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dmy){
+    const dd = Number(dmy[1]), mm = Number(dmy[2]), yy = Number(dmy[3]);
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) return `${yy}-${pad2(mm)}-${pad2(dd)}`;
+  }
+
+  // Sometimes Sheets exports a full datetime; try extracting YYYY-MM-DD
+  const isoInText = raw.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (isoInText) return `${isoInText[1]}-${isoInText[2]}-${isoInText[3]}`;
+
+  return null;
+}
+
+function parseTimeToMinutes(s){
+  if (s === undefined || s === null) return null;
+  const raw = String(s).trim();
+  if (!raw) return null;
+
+  // Extract HH:MM(:SS) from anywhere in the string (handles full datetimes)
+  const timeMatch = raw.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (timeMatch) {
+    const hh = Number(timeMatch[1]);
+    const mm = Number(timeMatch[2]);
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) return hh * 60 + mm;
+  }
+
+  // Excel/Google serial time (fraction of day)
+  const asNum = Number(raw.replace(",", "."));
+  if (!Number.isNaN(asNum) && asNum > 0 && asNum < 1.5) {
+    const minutes = Math.round((asNum % 1) * 24 * 60);
+    return (minutes >= 0 && minutes < 24*60) ? minutes : null;
+  }
+
+  // h:mm AM/PM
+  const ampm = raw.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+  if (ampm) {
+    let hh = Number(ampm[1]);
+    const mm = Number(ampm[2]);
+    const ap = ampm[3].toUpperCase();
+    if (hh < 1 || hh > 12 || mm < 0 || mm > 59) return null;
+    if (ap === "PM" && hh !== 12) hh += 12;
+    if (ap === "AM" && hh === 12) hh = 0;
+    return hh * 60 + mm;
+  }
+
+  return null;
+}
+
+function parseCSV(text){
+  text = text.replace(/^\uFEFF/, "");
+
+  const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) || "";
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  const semiCount  = (firstLine.match(/;/g) || []).length;
+  const delim = semiCount > commaCount ? ";" : ",";
+
+  const rows = [];
+  let row = [], cell = "", inQ = false;
+
+  for (let i=0; i<text.length; i++){
+    const c = text[i];
+    const n = text[i+1];
+
+    if (inQ){
+      if (c === '"' && n === '"'){ cell += '"'; i++; }
+      else if (c === '"'){ inQ = false; }
+      else { cell += c; }
+    } else {
+      if (c === '"'){ inQ = true; }
+      else if (c === delim){ row.push(cell); cell = ""; }
+      else if (c === '\n'){ row.push(cell); rows.push(row); row = []; cell = ""; }
+      else if (c === '\r'){ /* ignore */ }
+      else { cell += c; }
+    }
+  }
+  row.push(cell);
+  rows.push(row);
+  return rows;
+}
+
+async function loadSchedule(){
+  try{
+    const url = csvUrl();
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`CSV fetch failed: ${res.status} ${res.statusText} (url: ${url})`);
+
+    const txt = await res.text();
+    const rows = parseCSV(txt);
+
+    // Read event date from cell C21
+    eventDateKey = parseDateToKey(rows?.[DATE_CELL_ROW]?.[DATE_CELL_COL]);
+    if (!eventDateKey) {
+      document.getElementById("msg").textContent =
+        "Could not parse event date from C21. Use YYYY-MM-DD (recommended) or DD/MM/YYYY.";
+    }
+
+    const parsed = [];
+    for (let r=0; r<rows.length; r++){
+      const timeStr = (rows[r][COL_TIME] ?? "").trim();
+      const name = (rows[r][COL_NAME] ?? "").trim();
+      const minutes = parseTimeToMinutes(timeStr);
+      if (minutes === null) continue;
+      parsed.push({ minutesOfDay: minutes, timeStr, name });
+    }
+
+    parsed.sort((a,b)=>a.minutesOfDay - b.minutesOfDay);
+    schedule = parsed;
+    lastFetchMs = Date.now();
+
+    // Clear message only if date parsed (otherwise keep the warning)
+    if (eventDateKey) document.getElementById("msg").textContent = "";
+  } catch (e){
+    document.getElementById("msg").textContent = String(e);
+  }
+}
+
+// ---- RACE DETECTION RULE ----
+// A row is treated as a "race" if column C contains the word "race" (case-insensitive).
+function isRace(ev){
+  return (ev.name || "").toLowerCase().includes("race");
+}
+
+// Generic: next matching event (NO wrap to tomorrow)
+function secondsUntilNextMatching(now, predicate){
+  if (!schedule.length) return null;
+
+  const items = predicate ? schedule.filter(predicate) : schedule.slice();
+  if (!items.length) return null;
+
+  const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
+
+  // Only consider future events today
+  const next = items.find(ev => ev.minutesOfDay > nowMin);
+  if (!next) return null;
+
+  const deltaMin = next.minutesOfDay - nowMin;
+  const deltaSec = Math.max(0, Math.floor(deltaMin * 60));
+  return { next, deltaSec };
+}
+
+function isSailingWindowClosed(now){
+  // If event date is known and today is not the event date, treat as closed
+  if (eventDateKey){
+    const todayKey = dateKeyLocal(now);
+    if (todayKey !== eventDateKey) return true;
+  }
+
+  if (!schedule.length) return false; // schedule not loaded yet -> don't show closed
+
+  const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
+  const lastMin = schedule[schedule.length - 1].minutesOfDay;
+  return nowMin > lastMin; // past the final task time
+}
+
+function findActive(now){
+  if (!schedule.length) return null;
+
+  const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
+  if (nowMin < schedule[0].minutesOfDay) return null;
+
+  let active = null;
+  for (const ev of schedule){
+    if (ev.minutesOfDay <= nowMin) active = ev;
+    else break;
+  }
+  return active;
+}
+
+function render(){
+  const now = new Date();
+  document.getElementById("now").textContent = formatHMS(now);
+  document.getElementById("tz").textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+
+  const closed = isSailingWindowClosed(now);
+  if (closed){
+    document.getElementById("nextTaskTime").textContent = "--:--";
+    document.getElementById("nextTaskName").textContent = "SAILING WINDOW CLOSED";
+
+    document.getElementById("taskCountdownTitle").textContent = "";
+    document.getElementById("taskCountdown").textContent = "--:--";
+    document.getElementById("active").textContent = "";
+
+    document.getElementById("raceCountdownTitle").textContent = "";
+    document.getElementById("raceCountdown").textContent = "--:--";
+    document.getElementById("raceMeta").textContent = "";
+
+    document.getElementById("upNextTasks").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
+    document.getElementById("upNextRaces").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
+
+    if (eventDateKey){
+      document.getElementById("msg").textContent = `Event date: ${eventDateKey}`;
+    }
+    return;
+  }
+
+  // NEXT TASK (any row)
+  const nextTaskInfo = secondsUntilNextMatching(now, null);
+
+  if (nextTaskInfo){
+    const { next, deltaSec } = nextTaskInfo;
+    document.getElementById("nextTaskTime").textContent = formatHMfromMinutes(next.minutesOfDay);
+    document.getElementById("nextTaskName").textContent = next.name ? next.name : "—";
+    document.getElementById("taskCountdownTitle").textContent = next.name ? next.name : "";
+    document.getElementById("taskCountdown").textContent = formatCountdown(deltaSec);
+  } else {
+    document.getElementById("nextTaskTime").textContent = "--:--";
+    document.getElementById("nextTaskName").textContent = "No upcoming tasks";
+    document.getElementById("taskCountdownTitle").textContent = "";
+    document.getElementById("taskCountdown").textContent = "--:--";
+  }
+
+  // NEXT RACE (race rows only)
+  const nextRaceInfo = secondsUntilNextMatching(now, isRace);
+
+  if (nextRaceInfo){
+    const { next, deltaSec } = nextRaceInfo;
+    document.getElementById("raceCountdownTitle").textContent = next.name ? next.name : "Next race";
+    document.getElementById("raceCountdown").textContent = formatCountdown(deltaSec);
+    document.getElementById("raceMeta").textContent = `Race time: ${formatHMfromMinutes(next.minutesOfDay)}`;
+  } else {
+    document.getElementById("raceCountdownTitle").textContent = schedule.length ? "No upcoming races" : "";
+    document.getElementById("raceCountdown").textContent = "--:--";
+    document.getElementById("raceMeta").textContent = schedule.length ? "Add 'race' to race rows in column C." : "";
+  }
+
+  // Active (most recent row)
+  const active = findActive(now);
+  document.getElementById("active").textContent = active?.name ? `NOW: ${active.name}` : "";
+
+  // Up next (tasks) - next 3 (no wrap to tomorrow)
+  if (schedule.length){
+    const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
+
+    const upcomingTasks = schedule
+      .map(ev => ({ ev, dm: ev.minutesOfDay - nowMin }))
+      .filter(x => x.dm > 0)
+      .sort((a,b)=>a.dm - b.dm)
+      .slice(0,3)
+      .map(x => `${formatHMfromMinutes(x.ev.minutesOfDay)} — ${x.ev.name || "(no label)"}`);
+
+    document.getElementById("upNextTasks").innerHTML =
+      upcomingTasks.length ? upcomingTasks.map(line => `<div>${line}</div>`).join("") : "<div>No upcoming tasks</div>";
+
+    const upcomingRaces = schedule
+      .filter(isRace)
+      .map(ev => ({ ev, dm: ev.minutesOfDay - nowMin }))
+      .filter(x => x.dm > 0)
+      .sort((a,b)=>a.dm - b.dm)
+      .slice(0,3)
+      .map(x => `${formatHMfromMinutes(x.ev.minutesOfDay)} — ${x.ev.name || "(no label)"}`);
+
+    document.getElementById("upNextRaces").innerHTML =
+      upcomingRaces.length ? upcomingRaces.map(line => `<div>${line}</div>`).join("") : "<div>No upcoming races</div>";
+  } else {
+    document.getElementById("upNextTasks").textContent = "";
+    document.getElementById("upNextRaces").textContent = "";
+  }
+}
+
+async function tick(){
+  const nowMs = Date.now();
+  if (!lastFetchMs || (nowMs - lastFetchMs) > SCHEDULE_REFRESH_SECONDS*1000){
+    await loadSchedule();
+  }
+  render();
+}
+
+(async function init(){
+  if (!CSV_URL_BASE){
+    document.getElementById("msg").textContent = "CSV_URL_BASE is empty.";
+  } else {
+    await loadSchedule();
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>
