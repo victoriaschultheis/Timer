@@ -22,7 +22,26 @@
     .error { color: #ff9c9c; font-weight: 700; }
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
     @media (max-width: 920px) { .split { grid-template-columns: 1fr; } }
-    .kpi { display:flex; align-items:baseline; gap: 1rem; flex-wrap: wrap; }
+    .kpi { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    /* Stable digit width + reserved line height so boxes don’t jump when values change */
+    .nums {
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1;
+    }
+    .slot-mid {
+      min-height: calc(1.1 * clamp(34px, 5vw, 72px));
+      display: flex;
+      align-items: center;
+    }
+    .slot-big {
+      min-height: clamp(56px, 10vw, 140px);
+      display: flex;
+      align-items: center;
+    }
+    .nums.midW { min-width: 9ch; display: inline-block; text-align: center; }
+    .nums.bigW { min-width: 9ch; display: inline-block; text-align: center; }
+    .listBlock { min-height: 4.5em; }
+    .titleReserve { min-height: 2.75em; }
   </style>
 </head>
 <body>
@@ -32,13 +51,13 @@
         <div class="grid2">
           <div class="box">
             <div class="label">CURRENT TIME</div>
-            <div id="now" class="mid">--:--:--</div>
+            <div class="slot-mid"><div id="now" class="mid nums midW">00:00:00</div></div>
             <div id="tz" class="small muted"></div>
           </div>
 
           <div class="box">
             <div class="label">NEXT TASK TIME</div>
-            <div id="nextTaskTime" class="mid">--:--</div>
+            <div class="slot-mid"><div id="nextTaskTime" class="mid nums midW">00:00</div></div>
             <div id="nextTaskName" class="small">—</div>
           </div>
         </div>
@@ -46,9 +65,9 @@
         <div class="split">
           <div class="box">
             <div class="label">COUNTDOWN TO NEXT TASK</div>
-            <div id="taskCountdownTitle" class="small muted" style="margin-bottom:.35rem;"></div>
+            <div id="taskCountdownTitle" class="small muted titleReserve" style="margin-bottom:.35rem;"></div>
             <div class="kpi">
-              <div id="taskCountdown" class="big">--:--</div>
+              <div class="slot-big"><div id="taskCountdown" class="big nums bigW">00:00:00</div></div>
             </div>
             <div id="active" class="small muted"></div>
             <div id="msg" class="small error"></div>
@@ -56,9 +75,9 @@
 
           <div class="box raceBox">
             <div class="label">COUNTDOWN TO NEXT RACE</div>
-            <div id="raceCountdownTitle" class="small muted" style="margin-bottom:.35rem;"></div>
+            <div id="raceCountdownTitle" class="small muted titleReserve" style="margin-bottom:.35rem;"></div>
             <div class="kpi">
-              <div id="raceCountdown" class="big">--:--</div>
+              <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
             </div>
             <div class="small muted" id="raceMeta"></div>
           </div>
@@ -67,11 +86,11 @@
         <div class="grid2">
           <div class="box">
             <div class="label">UP NEXT (TASKS)</div>
-            <div id="upNextTasks" class="small">Loading…</div>
+            <div id="upNextTasks" class="small listBlock">Loading…</div>
           </div>
           <div class="box raceBox">
             <div class="label">UP NEXT (RACES)</div>
-            <div id="upNextRaces" class="small">Loading…</div>
+            <div id="upNextRaces" class="small listBlock">Loading…</div>
           </div>
         </div>
 
@@ -83,9 +102,9 @@
 /**
  * CONFIG
  * Google Sheets published CSV URL.
- * - column A: phase start time (HH:MM)
- * - column B: duration in minutes (empty on final “end” row → schedule ends at that time)
- * - column C: name/description
+ * - column A: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
+ *   The last time is end-of-window (no separate block after it). Column B is ignored.
+ * - column C: name/description for the block that starts at that row’s time
  * Event date: cell C21, or any row whose column A is “Date” (value in column C).
  */
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=801285555&single=true&output=csv";
@@ -96,7 +115,6 @@ function csvUrl(){
 }
 
 const COL_TIME = 0;
-const COL_DURATION = 1;
 const COL_NAME = 2;
 
 // Date is stored in cell C21 in the CSV (1-based). Convert to 0-based indices:
@@ -126,15 +144,21 @@ function formatHMfromSeconds(sec){
   return `${pad2(hh)}:${pad2(mm)}`;
 }
 
+/** HH:MM:00 — same width as live clock (tabular nums + 9ch slot). */
+function formatHMwithFixedSec(sec){
+  return `${formatHMfromSeconds(sec)}:00`;
+}
+
 function nowSecondsOfDay(d){
   return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
 }
 
+/** Always HH:MM:SS so width stays constant (with tabular nums). */
 function formatCountdown(deltaSec){
   const hh = Math.floor(deltaSec / 3600);
   const mm = Math.floor((deltaSec % 3600) / 60);
   const ss = deltaSec % 60;
-  return hh > 0 ? `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}` : `${pad2(mm)}:${pad2(ss)}`;
+  return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
 }
 
 function dateKeyLocal(d){
@@ -200,15 +224,6 @@ function parseTimeToMinutes(s){
   return null;
 }
 
-function parseDurationMinutes(s){
-  if (s === undefined || s === null) return null;
-  const raw = String(s).trim();
-  if (!raw) return null;
-  const n = Number(raw.replace(",", "."));
-  if (Number.isNaN(n) || n < 0) return null;
-  return n;
-}
-
 function parseCSV(text){
   text = text.replace(/^\uFEFF/, "");
 
@@ -266,48 +281,33 @@ async function loadSchedule(){
         "Could not parse event date (C21 or a row with “Date” in column A). Use YYYY-MM-DD or DD/MM/YYYY.";
     }
 
-    const rawPhases = [];
+    const markers = [];
     for (let r = 0; r < rows.length; r++){
       const timeStr = (rows[r][COL_TIME] ?? "").trim();
       const name = (rows[r][COL_NAME] ?? "").trim();
-      const durRaw = rows[r][COL_DURATION] ?? "";
       const startMin = parseTimeToMinutes(timeStr);
       if (startMin === null) continue;
-      const durMin = parseDurationMinutes(durRaw);
-      rawPhases.push({ startMin, durMin, name, timeStr });
+      markers.push({ startMin, name, timeStr });
     }
 
-    rawPhases.sort((a, b) => a.startMin - b.startMin);
+    markers.sort((a, b) => a.startMin - b.startMin);
 
-    let terminalEndSec = null;
-    const phases = [];
-    for (let i = 0; i < rawPhases.length; i++){
-      const row = rawPhases[i];
-      const startSec = row.startMin * 60;
-      let endSec;
-
-      if (row.durMin != null && row.durMin > 0){
-        endSec = startSec + row.durMin * 60;
-      } else if (i + 1 < rawPhases.length){
-        endSec = rawPhases[i + 1].startMin * 60;
-      } else {
-        terminalEndSec = startSec;
-        continue;
+    if (markers.length < 2){
+      schedule = [];
+      windowEndSec = markers.length === 1 ? markers[0].startMin * 60 : null;
+    } else {
+      const phases = [];
+      for (let i = 0; i < markers.length - 1; i++){
+        phases.push({
+          startSec: markers[i].startMin * 60,
+          endSec: markers[i + 1].startMin * 60,
+          startMin: markers[i].startMin,
+          name: markers[i].name,
+          timeStr: markers[i].timeStr,
+        });
       }
-
-      phases.push({
-        startSec,
-        endSec,
-        startMin: row.startMin,
-        name: row.name,
-        timeStr: row.timeStr,
-      });
-    }
-
-    schedule = phases;
-    windowEndSec = terminalEndSec;
-    if (windowEndSec == null && schedule.length){
-      windowEndSec = schedule[schedule.length - 1].endSec;
+      schedule = phases;
+      windowEndSec = markers[markers.length - 1].startMin * 60;
     }
     lastFetchMs = Date.now();
   } catch (e){
@@ -370,15 +370,15 @@ function render(){
 
   const closed = isSailingWindowClosed(now);
   if (closed){
-    document.getElementById("nextTaskTime").textContent = "--:--";
+    document.getElementById("nextTaskTime").textContent = "--:--:--";
     document.getElementById("nextTaskName").textContent = "SAILING WINDOW CLOSED";
 
     document.getElementById("taskCountdownTitle").textContent = "";
-    document.getElementById("taskCountdown").textContent = "--:--";
+    document.getElementById("taskCountdown").textContent = "--:--:--";
     document.getElementById("active").textContent = "";
 
     document.getElementById("raceCountdownTitle").textContent = "";
-    document.getElementById("raceCountdown").textContent = "--:--";
+    document.getElementById("raceCountdown").textContent = "--:--:--";
     document.getElementById("raceMeta").textContent = "";
 
     document.getElementById("upNextTasks").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
@@ -395,15 +395,15 @@ function render(){
 
   if (nextTaskInfo){
     const { next, deltaSec } = nextTaskInfo;
-    document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(next.startSec);
+    document.getElementById("nextTaskTime").textContent = formatHMwithFixedSec(next.startSec);
     document.getElementById("nextTaskName").textContent = next.name ? next.name : "—";
     document.getElementById("taskCountdownTitle").textContent = next.name ? next.name : "";
     document.getElementById("taskCountdown").textContent = formatCountdown(deltaSec);
   } else {
-    document.getElementById("nextTaskTime").textContent = "--:--";
+    document.getElementById("nextTaskTime").textContent = "--:--:--";
     document.getElementById("nextTaskName").textContent = "No upcoming tasks";
     document.getElementById("taskCountdownTitle").textContent = "";
-    document.getElementById("taskCountdown").textContent = "--:--";
+    document.getElementById("taskCountdown").textContent = "--:--:--";
   }
 
   // NEXT RACE (race rows only)
@@ -413,21 +413,22 @@ function render(){
     const { next, deltaSec } = nextRaceInfo;
     document.getElementById("raceCountdownTitle").textContent = next.name ? next.name : "Next race";
     document.getElementById("raceCountdown").textContent = formatCountdown(deltaSec);
-    document.getElementById("raceMeta").textContent = `Race time: ${formatHMfromSeconds(next.startSec)}`;
+    document.getElementById("raceMeta").textContent = `Race time: ${formatHMwithFixedSec(next.startSec)}`;
   } else {
     document.getElementById("raceCountdownTitle").textContent = schedule.length ? "No upcoming races" : "";
-    document.getElementById("raceCountdown").textContent = "--:--";
-    document.getElementById("raceMeta").textContent = schedule.length ? "Add 'race' to race rows in column C." : "";
+    document.getElementById("raceCountdown").textContent = "--:--:--";
+    document.getElementById("raceMeta").textContent =
+      schedule.length ? "Label races in column C with text starting with “Race”." : "";
   }
 
   const nowSec = nowSecondsOfDay(now);
   const active = findActive(now);
   if (active?.name){
-    const ends = formatHMfromSeconds(active.endSec);
+    const ends = formatHMwithFixedSec(active.endSec);
     document.getElementById("active").textContent = `NOW: ${active.name} · until ${ends}`;
   } else if (schedule.length && nowSec < schedule[0].startSec){
     document.getElementById("active").textContent =
-      `Before first block · starts ${formatHMfromSeconds(schedule[0].startSec)}`;
+      `Before first block · starts ${formatHMwithFixedSec(schedule[0].startSec)}`;
   } else {
     document.getElementById("active").textContent = schedule.length ? "Between scheduled blocks" : "";
   }
