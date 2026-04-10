@@ -83,11 +83,12 @@
 /**
  * CONFIG
  * Google Sheets published CSV URL.
- * - column A: time (e.g., 13:22 or 1:22 PM)
+ * - column A: phase start time (HH:MM)
+ * - column B: duration in minutes (empty on final “end” row → schedule ends at that time)
  * - column C: name/description
- * Event date is stored in cell C21.
+ * Event date: cell C21, or any row whose column A is “Date” (value in column C).
  */
-const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=1828897173&single=true&output=csv";
+const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=801285555&single=true&output=csv";
 
 // Cache-busting per fetch (important: Date.now() must be evaluated each time)
 function csvUrl(){
@@ -95,6 +96,7 @@ function csvUrl(){
 }
 
 const COL_TIME = 0;
+const COL_DURATION = 1;
 const COL_NAME = 2;
 
 // Date is stored in cell C21 in the CSV (1-based). Convert to 0-based indices:
@@ -104,9 +106,12 @@ const DATE_CELL_COL = 3 - 1;  // 2  (C)
 // Refresh schedule from CSV every N seconds (UI updates every second regardless)
 const SCHEDULE_REFRESH_SECONDS = 10;
 
-let schedule = []; // { minutesOfDay, timeStr, name }
+/** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
+let schedule = [];
+let windowEndSec = null; // sailing day ends at this second-of-day (local)
 let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from C21
+let loadError = "";
 
 function pad2(n){ return String(n).padStart(2,"0"); }
 
@@ -114,10 +119,15 @@ function formatHMS(d){
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
-function formatHMfromMinutes(m){
+function formatHMfromSeconds(sec){
+  const m = Math.floor(sec / 60);
   const hh = Math.floor(m / 60) % 24;
   const mm = m % 60;
   return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function nowSecondsOfDay(d){
+  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
 }
 
 function formatCountdown(deltaSec){
@@ -141,7 +151,7 @@ function parseDateToKey(s){
   const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  // AU-style: DD/MM/YYYY
+  // Slash dates: interpret as DD/MM/YYYY (e.g. 10/04/2026 → 10 Apr 2026)
   const dmy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (dmy){
     const dd = Number(dmy[1]), mm = Number(dmy[2]), yy = Number(dmy[3]);
@@ -190,6 +200,15 @@ function parseTimeToMinutes(s){
   return null;
 }
 
+function parseDurationMinutes(s){
+  if (s === undefined || s === null) return null;
+  const raw = String(s).trim();
+  if (!raw) return null;
+  const n = Number(raw.replace(",", "."));
+  if (Number.isNaN(n) || n < 0) return null;
+  return n;
+}
+
 function parseCSV(text){
   text = text.replace(/^\uFEFF/, "");
 
@@ -224,6 +243,7 @@ function parseCSV(text){
 
 async function loadSchedule(){
   try{
+    loadError = "";
     const url = csvUrl();
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`CSV fetch failed: ${res.status} ${res.statusText} (url: ${url})`);
@@ -231,89 +251,122 @@ async function loadSchedule(){
     const txt = await res.text();
     const rows = parseCSV(txt);
 
-    // Read event date from cell C21
     eventDateKey = parseDateToKey(rows?.[DATE_CELL_ROW]?.[DATE_CELL_COL]);
-    if (!eventDateKey) {
-      document.getElementById("msg").textContent =
-        "Could not parse event date from C21. Use YYYY-MM-DD (recommended) or DD/MM/YYYY.";
+    if (!eventDateKey){
+      for (let r = 0; r < rows.length; r++){
+        const label = (rows[r][COL_TIME] ?? "").trim().toLowerCase();
+        if (label === "date"){
+          eventDateKey = parseDateToKey(rows[r][DATE_CELL_COL]);
+          if (eventDateKey) break;
+        }
+      }
+    }
+    if (!eventDateKey){
+      loadError =
+        "Could not parse event date (C21 or a row with “Date” in column A). Use YYYY-MM-DD or DD/MM/YYYY.";
     }
 
-    const parsed = [];
-    for (let r=0; r<rows.length; r++){
+    const rawPhases = [];
+    for (let r = 0; r < rows.length; r++){
       const timeStr = (rows[r][COL_TIME] ?? "").trim();
       const name = (rows[r][COL_NAME] ?? "").trim();
-      const minutes = parseTimeToMinutes(timeStr);
-      if (minutes === null) continue;
-      parsed.push({ minutesOfDay: minutes, timeStr, name });
+      const durRaw = rows[r][COL_DURATION] ?? "";
+      const startMin = parseTimeToMinutes(timeStr);
+      if (startMin === null) continue;
+      const durMin = parseDurationMinutes(durRaw);
+      rawPhases.push({ startMin, durMin, name, timeStr });
     }
 
-    parsed.sort((a,b)=>a.minutesOfDay - b.minutesOfDay);
-    schedule = parsed;
-    lastFetchMs = Date.now();
+    rawPhases.sort((a, b) => a.startMin - b.startMin);
 
-    // Clear message only if date parsed (otherwise keep the warning)
-    if (eventDateKey) document.getElementById("msg").textContent = "";
+    let terminalEndSec = null;
+    const phases = [];
+    for (let i = 0; i < rawPhases.length; i++){
+      const row = rawPhases[i];
+      const startSec = row.startMin * 60;
+      let endSec;
+
+      if (row.durMin != null && row.durMin > 0){
+        endSec = startSec + row.durMin * 60;
+      } else if (i + 1 < rawPhases.length){
+        endSec = rawPhases[i + 1].startMin * 60;
+      } else {
+        terminalEndSec = startSec;
+        continue;
+      }
+
+      phases.push({
+        startSec,
+        endSec,
+        startMin: row.startMin,
+        name: row.name,
+        timeStr: row.timeStr,
+      });
+    }
+
+    schedule = phases;
+    windowEndSec = terminalEndSec;
+    if (windowEndSec == null && schedule.length){
+      windowEndSec = schedule[schedule.length - 1].endSec;
+    }
+    lastFetchMs = Date.now();
   } catch (e){
-    document.getElementById("msg").textContent = String(e);
+    loadError = String(e);
   }
 }
 
 // ---- RACE DETECTION RULE ----
-// A row is treated as a "race" if column C contains the word "race" (case-insensitive).
+// Count actual race blocks (e.g. "Race 1 (A1)…"), not pit-lane rows like "Pit lane - Race 2…".
 function isRace(ev){
-  return (ev.name || "").toLowerCase().includes("race");
+  return (ev.name || "").trim().toLowerCase().startsWith("race");
 }
 
-// Generic: next matching event (NO wrap to tomorrow)
+// Next phase start after `now` among matching rows (no wrap to tomorrow)
 function secondsUntilNextMatching(now, predicate){
   if (!schedule.length) return null;
 
   const items = predicate ? schedule.filter(predicate) : schedule.slice();
   if (!items.length) return null;
 
-  const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
-
-  // Only consider future events today
-  const next = items.find(ev => ev.minutesOfDay > nowMin);
+  const nowSec = nowSecondsOfDay(now);
+  const next = items.find(ev => ev.startSec > nowSec);
   if (!next) return null;
 
-  const deltaMin = next.minutesOfDay - nowMin;
-  const deltaSec = Math.max(0, Math.floor(deltaMin * 60));
+  const deltaSec = Math.max(0, next.startSec - nowSec);
   return { next, deltaSec };
 }
 
 function isSailingWindowClosed(now){
-  // If event date is known and today is not the event date, treat as closed
   if (eventDateKey){
     const todayKey = dateKeyLocal(now);
     if (todayKey !== eventDateKey) return true;
   }
 
-  if (!schedule.length) return false; // schedule not loaded yet -> don't show closed
+  if (windowEndSec == null && !schedule.length) return false;
 
-  const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
-  const lastMin = schedule[schedule.length - 1].minutesOfDay;
-  return nowMin > lastMin; // past the final task time
+  const nowSec = nowSecondsOfDay(now);
+  if (windowEndSec == null) return false;
+  return nowSec >= windowEndSec;
 }
 
 function findActive(now){
   if (!schedule.length) return null;
 
-  const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
-  if (nowMin < schedule[0].minutesOfDay) return null;
+  const nowSec = nowSecondsOfDay(now);
+  if (nowSec < schedule[0].startSec) return null;
 
-  let active = null;
   for (const ev of schedule){
-    if (ev.minutesOfDay <= nowMin) active = ev;
-    else break;
+    if (nowSec >= ev.startSec && nowSec < ev.endSec) return ev;
   }
-  return active;
+  return null;
 }
 
 function render(){
   const now = new Date();
   document.getElementById("now").textContent = formatHMS(now);
   document.getElementById("tz").textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+
+  document.getElementById("msg").textContent = loadError;
 
   const closed = isSailingWindowClosed(now);
   if (closed){
@@ -331,8 +384,8 @@ function render(){
     document.getElementById("upNextTasks").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
     document.getElementById("upNextRaces").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
 
-    if (eventDateKey){
-      document.getElementById("msg").textContent = `Event date: ${eventDateKey}`;
+    if (eventDateKey && !loadError){
+      document.getElementById("msg").textContent = `Sailing window ended · Event date: ${eventDateKey}`;
     }
     return;
   }
@@ -342,7 +395,7 @@ function render(){
 
   if (nextTaskInfo){
     const { next, deltaSec } = nextTaskInfo;
-    document.getElementById("nextTaskTime").textContent = formatHMfromMinutes(next.minutesOfDay);
+    document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(next.startSec);
     document.getElementById("nextTaskName").textContent = next.name ? next.name : "—";
     document.getElementById("taskCountdownTitle").textContent = next.name ? next.name : "";
     document.getElementById("taskCountdown").textContent = formatCountdown(deltaSec);
@@ -360,38 +413,42 @@ function render(){
     const { next, deltaSec } = nextRaceInfo;
     document.getElementById("raceCountdownTitle").textContent = next.name ? next.name : "Next race";
     document.getElementById("raceCountdown").textContent = formatCountdown(deltaSec);
-    document.getElementById("raceMeta").textContent = `Race time: ${formatHMfromMinutes(next.minutesOfDay)}`;
+    document.getElementById("raceMeta").textContent = `Race time: ${formatHMfromSeconds(next.startSec)}`;
   } else {
     document.getElementById("raceCountdownTitle").textContent = schedule.length ? "No upcoming races" : "";
     document.getElementById("raceCountdown").textContent = "--:--";
     document.getElementById("raceMeta").textContent = schedule.length ? "Add 'race' to race rows in column C." : "";
   }
 
-  // Active (most recent row)
+  const nowSec = nowSecondsOfDay(now);
   const active = findActive(now);
-  document.getElementById("active").textContent = active?.name ? `NOW: ${active.name}` : "";
+  if (active?.name){
+    const ends = formatHMfromSeconds(active.endSec);
+    document.getElementById("active").textContent = `NOW: ${active.name} · until ${ends}`;
+  } else if (schedule.length && nowSec < schedule[0].startSec){
+    document.getElementById("active").textContent =
+      `Before first block · starts ${formatHMfromSeconds(schedule[0].startSec)}`;
+  } else {
+    document.getElementById("active").textContent = schedule.length ? "Between scheduled blocks" : "";
+  }
 
-  // Up next (tasks) - next 3 (no wrap to tomorrow)
+  // Up next (tasks) - next 3 phase starts (no wrap to tomorrow)
   if (schedule.length){
-    const nowMin = now.getHours()*60 + now.getMinutes() + now.getSeconds()/60;
-
     const upcomingTasks = schedule
-      .map(ev => ({ ev, dm: ev.minutesOfDay - nowMin }))
-      .filter(x => x.dm > 0)
-      .sort((a,b)=>a.dm - b.dm)
-      .slice(0,3)
-      .map(x => `${formatHMfromMinutes(x.ev.minutesOfDay)} — ${x.ev.name || "(no label)"}`);
+      .filter(ev => ev.startSec > nowSec)
+      .sort((a, b) => a.startSec - b.startSec)
+      .slice(0, 3)
+      .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
 
     document.getElementById("upNextTasks").innerHTML =
       upcomingTasks.length ? upcomingTasks.map(line => `<div>${line}</div>`).join("") : "<div>No upcoming tasks</div>";
 
     const upcomingRaces = schedule
       .filter(isRace)
-      .map(ev => ({ ev, dm: ev.minutesOfDay - nowMin }))
-      .filter(x => x.dm > 0)
-      .sort((a,b)=>a.dm - b.dm)
-      .slice(0,3)
-      .map(x => `${formatHMfromMinutes(x.ev.minutesOfDay)} — ${x.ev.name || "(no label)"}`);
+      .filter(ev => ev.startSec > nowSec)
+      .sort((a, b) => a.startSec - b.startSec)
+      .slice(0, 3)
+      .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
 
     document.getElementById("upNextRaces").innerHTML =
       upcomingRaces.length ? upcomingRaces.map(line => `<div>${line}</div>`).join("") : "<div>No upcoming races</div>";
