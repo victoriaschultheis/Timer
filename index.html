@@ -466,7 +466,7 @@ function render(){
     document.getElementById("active").textContent = `NOW: ${active.name} · until ${ends}`;
   } else if (schedule.length && nowSec < schedule[0].startSec){
     document.getElementById("active").textContent =
-      `at ${formatHMwithFixedSec(schedule[0].startSec)}`;
+      ``;
   } else {
     document.getElementById("active").textContent = schedule.length ? "Between scheduled blocks" : "";
   }
