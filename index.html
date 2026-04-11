@@ -471,26 +471,43 @@ function render(){
     document.getElementById("active").textContent = schedule.length ? "Between scheduled blocks" : "";
   }
 
-  // Up next (tasks) - next 3 phase starts (no wrap to tomorrow)
+  // Up next — starts *after* the immediate next item (same as countdown boxes above),
+  // so we don’t repeat that row here.
   if (schedule.length){
-    const upcomingTasks = schedule
+    const aheadTasks = schedule
       .filter(ev => ev.startSec > nowSec)
-      .sort((a, b) => a.startSec - b.startSec)
-      .slice(0, 3)
+      .sort((a, b) => a.startSec - b.startSec);
+    const upcomingTasks = aheadTasks
+      .slice(1, 4)
       .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
 
-    document.getElementById("upNextTasks").innerHTML =
-      upcomingTasks.length ? upcomingTasks.map(line => `<div>${line}</div>`).join("") : "<div>No upcoming tasks</div>";
+    let tasksHtml;
+    if (upcomingTasks.length){
+      tasksHtml = upcomingTasks.map(line => `<div>${line}</div>`).join("");
+    } else if (!aheadTasks.length){
+      tasksHtml = "<div>No upcoming tasks</div>";
+    } else {
+      tasksHtml = "<div class=\"muted\">Nothing scheduled after that</div>";
+    }
+    document.getElementById("upNextTasks").innerHTML = tasksHtml;
 
-    const upcomingRaces = schedule
+    const aheadRaces = schedule
       .filter(isRace)
       .filter(ev => ev.startSec > nowSec)
-      .sort((a, b) => a.startSec - b.startSec)
-      .slice(0, 3)
+      .sort((a, b) => a.startSec - b.startSec);
+    const upcomingRaces = aheadRaces
+      .slice(1, 4)
       .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
 
-    document.getElementById("upNextRaces").innerHTML =
-      upcomingRaces.length ? upcomingRaces.map(line => `<div>${line}</div>`).join("") : "<div>No upcoming races</div>";
+    let racesHtml;
+    if (upcomingRaces.length){
+      racesHtml = upcomingRaces.map(line => `<div>${line}</div>`).join("");
+    } else if (!aheadRaces.length){
+      racesHtml = "<div>No upcoming races</div>";
+    } else {
+      racesHtml = "<div class=\"muted\">Nothing scheduled after that</div>";
+    }
+    document.getElementById("upNextRaces").innerHTML = racesHtml;
   } else {
     document.getElementById("upNextTasks").textContent = "";
     document.getElementById("upNextRaces").textContent = "";
