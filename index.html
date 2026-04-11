@@ -330,6 +330,21 @@ async function loadSchedule(){
 
     markers.sort((a, b) => a.startMin - b.startMin);
 
+    // Two rows at the same clock time create two phases with the same startSec (e.g. 10:00→10:00
+    // and 10:00→11:00). “Up next” then showed that time twice after skipping the hero row.
+    const merged = [];
+    for (const m of markers){
+      const prev = merged[merged.length - 1];
+      if (prev && prev.startMin === m.startMin){
+        if (m.name) prev.name = m.name;
+        prev.timeStr = m.timeStr;
+      } else {
+        merged.push({ startMin: m.startMin, name: m.name, timeStr: m.timeStr });
+      }
+    }
+    markers.length = 0;
+    markers.push(...merged);
+
     if (markers.length < 2){
       schedule = [];
       windowEndSec = markers.length === 1 ? markers[0].startMin * 60 : null;
@@ -357,6 +372,16 @@ async function loadSchedule(){
 // Count actual race blocks (e.g. "Race 1 (A1)…"), not pit-lane rows like "Pit lane - Race 2…".
 function isRace(ev){
   return (ev.name || "").trim().toLowerCase().startsWith("race");
+}
+
+/** One entry per start time (sheet sometimes has two rows at the same boundary). */
+function dedupeByStartSec(phases){
+  const out = [];
+  for (const ev of phases){
+    if (out.length && out[out.length - 1].startSec === ev.startSec) continue;
+    out.push(ev);
+  }
+  return out;
 }
 
 // Next phase start after `now` among matching rows (no wrap to tomorrow)
@@ -474,9 +499,11 @@ function render(){
   // Up next — starts *after* the immediate next item (same as countdown boxes above),
   // so we don’t repeat that row here.
   if (schedule.length){
-    const aheadTasks = schedule
-      .filter(ev => ev.startSec > nowSec)
-      .sort((a, b) => a.startSec - b.startSec);
+    const aheadTasks = dedupeByStartSec(
+      schedule
+        .filter(ev => ev.startSec > nowSec)
+        .sort((a, b) => a.startSec - b.startSec)
+    );
     const upcomingTasks = aheadTasks
       .slice(1, 4)
       .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
@@ -491,10 +518,12 @@ function render(){
     }
     document.getElementById("upNextTasks").innerHTML = tasksHtml;
 
-    const aheadRaces = schedule
-      .filter(isRace)
-      .filter(ev => ev.startSec > nowSec)
-      .sort((a, b) => a.startSec - b.startSec);
+    const aheadRaces = dedupeByStartSec(
+      schedule
+        .filter(isRace)
+        .filter(ev => ev.startSec > nowSec)
+        .sort((a, b) => a.startSec - b.startSec)
+    );
     const upcomingRaces = aheadRaces
       .slice(1, 4)
       .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
