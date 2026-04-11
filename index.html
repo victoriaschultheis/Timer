@@ -121,8 +121,8 @@ const COL_NAME = 2;
 const DATE_CELL_ROW = 21 - 1; // 20
 const DATE_VALUE_COLS = [2, 3, 1]; // C, D, B — try in that order
 
-// Refresh schedule from CSV every N seconds (UI updates every second regardless)
-const SCHEDULE_REFRESH_SECONDS = 10;
+// Refresh schedule from CSV every N seconds (UI clock still ticks every second)
+const SCHEDULE_REFRESH_SECONDS = 4;
 
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
