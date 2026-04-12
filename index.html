@@ -348,11 +348,17 @@
       flex-shrink: 0;
       align-self: center;
     }
-    /* Next row shares this boundary — no second live timer (see buildTaskTimersHtml). */
+    /* Immediate next row while current task runs — no second timer (same instant as active’s end). */
     .task-timer-nums--pending {
+      min-width: 9ch;
+      display: inline-block;
+      text-align: center;
+      vertical-align: middle;
+    }
+    .task-timer-nums--pending::after {
+      content: "\2014";
       color: var(--text-muted);
-      font-weight: 700;
-      letter-spacing: 0.04em;
+      font-weight: 600;
     }
     .task-timers-empty {
       text-align: center;
@@ -854,17 +860,21 @@ function findActive(now){
 }
 
 /**
- * One row per phase: ended → 00:00:00; active → time left in block; future → time until start.
- * If the next phase starts exactly when the current block ends, both would show the same ticking
- * value — we show a placeholder on that future row until the boundary passes (only one live timer).
+ * Active row: countdown = time left until the *current* task block ends (only live “to current task” timer).
+ * Ended: 00:00:00. Other futures: time until that phase starts — except the single row *right after*
+ * the active one (same schedule boundary): that would duplicate the same ticking value, so we show no second timer.
  */
 function buildTaskTimersHtml(schedule, nowSec, activeEv){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
   const activeStart = activeEv ? activeEv.startSec : null;
+  const activeIdx = activeEv
+    ? schedule.findIndex(e => e.startSec === activeEv.startSec)
+    : -1;
   const parts = [];
-  for (const ev of schedule){
+  for (let i = 0; i < schedule.length; i++){
+    const ev = schedule[i];
     const ended = nowSec >= ev.endSec;
     const future = nowSec < ev.startSec;
     let cls;
@@ -875,10 +885,12 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
       cd = "00:00:00";
     } else if (future){
       cls = "task-timer-row";
-      const sharesBoundary =
-        activeEv != null && ev.startSec === activeEv.endSec;
-      if (sharesBoundary){
-        cd = "—:—:—";
+      const wouldDuplicateActiveCountdown =
+        activeIdx >= 0 &&
+        i === activeIdx + 1 &&
+        ev.startSec === schedule[activeIdx].endSec;
+      if (wouldDuplicateActiveCountdown){
+        cd = "";
         numsExtraClass = " task-timer-nums--pending";
       } else {
         const deltaSec = ev.startSec - nowSec;
