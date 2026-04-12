@@ -320,21 +320,6 @@
     .task-timer-row.is-active {
       background: rgba(75, 85, 98, 0.2);
     }
-    .task-timer-row.is-ended {
-      background: rgba(75, 85, 98, 0.05);
-      opacity: 0.9;
-    }
-    .task-timer-row.is-ended .task-timer-nums {
-      color: var(--text-muted);
-    }
-    /* Other future tasks — lighter timer; “next” task is darker (below). */
-    .task-timer-row:not(.is-ended):not(.is-active):not(.is-next) .task-timer-nums {
-      color: #8f98a3;
-    }
-    .task-timer-row.is-next .task-timer-nums {
-      color: #343b46;
-      font-weight: 900;
-    }
     .task-timer-meta {
       min-width: 0;
       display: flex;
@@ -862,33 +847,33 @@ function findActive(now){
   return null;
 }
 
-/** One row per phase: future → time to start; ended → 00:00:00; active → time left. `nextTaskStartSec` marks the row that is the immediate next task (darker timer). */
-function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec){
+/** One row per phase: future → time to start; ended → fixed 00:00:00 (no live countdown); active → time left. Only `.is-active` is shaded (CSS). */
+function buildTaskTimersHtml(schedule, nowSec, activeEv){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
   const activeStart = activeEv ? activeEv.startSec : null;
   const parts = [];
   for (const ev of schedule){
+    const ended = nowSec >= ev.endSec;
+    const future = nowSec < ev.startSec;
     let cls;
-    let deltaSec;
-    if (nowSec >= ev.endSec){
-      cls = "task-timer-row is-ended";
-      deltaSec = 0;
-    } else if (nowSec < ev.startSec){
+    let cd;
+    if (ended){
       cls = "task-timer-row";
-      if (nextTaskStartSec !== null && ev.startSec === nextTaskStartSec){
-        cls += " is-next";
-      }
-      deltaSec = ev.startSec - nowSec;
+      cd = "00:00:00";
+    } else if (future){
+      cls = "task-timer-row";
+      const deltaSec = ev.startSec - nowSec;
+      cd = formatCountdown(Math.max(0, deltaSec));
     } else {
       const isActive = activeStart !== null && ev.startSec === activeStart;
       cls = isActive ? "task-timer-row is-active" : "task-timer-row";
-      deltaSec = ev.endSec - nowSec;
+      const deltaSec = ev.endSec - nowSec;
+      cd = formatCountdown(Math.max(0, deltaSec));
     }
     const tStart = formatHMwithFixedSec(ev.startSec);
     const name = escapeHtml(ev.name || "(no label)");
-    const cd = formatCountdown(Math.max(0, deltaSec));
     parts.push(
       `<div class="${cls}">` +
         `<div class="task-timer-meta">` +
@@ -945,8 +930,7 @@ function render(){
   }
 
   const active = findActive(now);
-  const nextTaskStartSec = taskChain.length ? taskChain[0].startSec : null;
-  document.getElementById("taskTimersList").innerHTML = buildTaskTimersHtml(schedule, nowSec, active, nextTaskStartSec);
+  document.getElementById("taskTimersList").innerHTML = buildTaskTimersHtml(schedule, nowSec, active);
 
   // NEXT RACE — one entry per logical race (see dedupeRacePhasesByLogicalRace)
   const raceChain = raceChainAfterNowSec(nowSec);
