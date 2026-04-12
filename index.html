@@ -37,6 +37,24 @@
       min-height: clamp(56px, 10vw, 140px);
       display: flex;
       align-items: center;
+      justify-content: center;
+    }
+    .raceBox .slot-big {
+      height: clamp(56px, 10vw, 140px);
+      box-sizing: border-box;
+    }
+    /* Same vertical slot as numeric countdown; small caption so the race box doesn’t grow */
+    #raceCountdown.is-closed {
+      font-size: clamp(12px, 1.65vw, 18px);
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      opacity: 0.88;
+      white-space: normal;
+      text-align: center;
+      max-width: 22ch;
+      min-width: 0 !important;
     }
     .nums.midW { min-width: 9ch; display: inline-block; text-align: center; }
     .nums.bigW { min-width: 9ch; display: inline-block; text-align: center; }
@@ -477,7 +495,7 @@ function render(){
 
   const closed = isSailingWindowClosed(now);
   if (closed){
-    document.getElementById("nextTaskTime").textContent = "--:--:--";
+    document.getElementById("nextTaskTime").textContent = "";
     document.getElementById("nextTaskName").textContent = "—";
 
     document.getElementById("taskCountdownTitle").textContent = "";
@@ -485,7 +503,9 @@ function render(){
     document.getElementById("active").textContent = "";
 
     document.getElementById("raceCountdownTitle").textContent = "";
-    document.getElementById("raceCountdown").textContent = "Sailing window closed.";
+    const raceCd = document.getElementById("raceCountdown");
+    raceCd.textContent = "Sailing window closed";
+    raceCd.classList.add("is-closed");
     document.getElementById("raceMeta").textContent = "";
 
     document.getElementById("upNextTasks").innerHTML = "";
@@ -504,7 +524,7 @@ function render(){
     document.getElementById("taskCountdownTitle").textContent = next.name ? next.name : "";
     document.getElementById("taskCountdown").textContent = formatCountdown(deltaSec);
   } else {
-    document.getElementById("nextTaskTime").textContent = "--:--:--";
+    document.getElementById("nextTaskTime").textContent = "";
     document.getElementById("nextTaskName").textContent = "No upcoming tasks";
     document.getElementById("taskCountdownTitle").textContent = "";
     document.getElementById("taskCountdown").textContent = "--:--:--";
@@ -516,11 +536,15 @@ function render(){
   if (nextRaceInfo){
     const { next, deltaSec } = nextRaceInfo;
     document.getElementById("raceCountdownTitle").textContent = next.name ? next.name : "Next race";
-    document.getElementById("raceCountdown").textContent = formatCountdown(deltaSec);
+    const raceCd = document.getElementById("raceCountdown");
+    raceCd.textContent = formatCountdown(deltaSec);
+    raceCd.classList.remove("is-closed");
     document.getElementById("raceMeta").textContent = `Race time: ${formatHMwithFixedSec(next.startSec)}`;
   } else {
     document.getElementById("raceCountdownTitle").textContent = schedule.length ? "No upcoming races" : "";
-    document.getElementById("raceCountdown").textContent = "--:--:--";
+    const raceCd = document.getElementById("raceCountdown");
+    raceCd.textContent = "--:--:--";
+    raceCd.classList.remove("is-closed");
     document.getElementById("raceMeta").textContent =
       schedule.length ? "Label races in column C with text starting with “Race”." : "";
   }
