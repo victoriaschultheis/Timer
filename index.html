@@ -373,8 +373,7 @@
  * - column C: name/description for the block that starts at that row’s time
  * Event date: row 21 in column C or D, or any row whose column A is “Date” (value in B, C, or D).
  */
-const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=503242164&single=true&output=csv";
-
+const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=2132763229&single=true&output=csv";
 // Cache-busting per fetch (important: Date.now() must be evaluated each time)
 function csvUrl(){
   return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
