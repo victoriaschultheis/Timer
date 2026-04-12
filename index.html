@@ -215,7 +215,18 @@
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: flex-start;
+    }
+    /* One column, left-aligned text; whole column centered in the box so times line up */
+    .listBlock-inner {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
       gap: 0.35em;
+      width: max-content;
+      max-width: 100%;
+      margin-inline: auto;
+      text-align: left;
     }
     .listBlock > .upnext-msg {
       width: 100%;
@@ -223,12 +234,12 @@
     }
     .upnext-line {
       display: grid;
-      grid-template-columns: 5.25ch auto minmax(0, max-content);
+      grid-template-columns: 5.25ch auto minmax(0, 1fr);
       gap: 0 0.45em;
       align-items: baseline;
       justify-items: start;
-      width: max-content;
-      max-width: 100%;
+      width: 100%;
+      min-width: 0;
       text-align: left;
     }
     .upnext-time {
@@ -800,7 +811,7 @@ function render(){
 
     let tasksHtml;
     if (upcomingTaskEvs.length){
-      tasksHtml = upcomingTaskEvs.map(ev => upNextLineHtml(ev)).join("");
+      tasksHtml = `<div class="listBlock-inner">${upcomingTaskEvs.map(ev => upNextLineHtml(ev)).join("")}</div>`;
     } else if (!aheadTasks.length){
       tasksHtml = "<div class=\"upnext-msg\">No upcoming tasks</div>";
     } else {
@@ -818,7 +829,7 @@ function render(){
 
     let racesHtml;
     if (upcomingRaceEvs.length){
-      racesHtml = upcomingRaceEvs.map(ev => upNextLineHtml(ev)).join("");
+      racesHtml = `<div class="listBlock-inner">${upcomingRaceEvs.map(ev => upNextLineHtml(ev)).join("")}</div>`;
     } else if (!aheadRaces.length){
       racesHtml = "<div class=\"upnext-msg\">No upcoming races</div>";
     } else {
