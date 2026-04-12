@@ -410,9 +410,9 @@ function escapeHtml(s){
     .replace(/"/g, "&quot;");
 }
 
-/** One row in Up next: fixed-width time column so times line up; whole block centered in the panel. */
+/** One row in Up next: same HH:MM:00 as “Next task time” (single formatter, no mismatch). */
 function upNextLineHtml(ev){
-  const t = formatHMfromSeconds(ev.startSec);
+  const t = formatHMwithFixedSec(ev.startSec);
   const n = escapeHtml(ev.name || "(no label)");
   return `<div class="upnext-line"><span class="upnext-time nums">${t}</span><span class="upnext-sep">—</span><span class="upnext-name">${n}</span></div>`;
 }
@@ -796,19 +796,6 @@ function chainAfterNowSec(nowSec, predicate){
   );
 }
 
-// Next phase start after `now` among matching rows (no wrap to tomorrow)
-function secondsUntilNextMatching(now, predicate){
-  if (!schedule.length) return null;
-
-  const nowSec = nowSecondsOfDay(now);
-  const chain = chainAfterNowSec(nowSec, predicate);
-  if (!chain.length) return null;
-
-  const next = chain[0];
-  const deltaSec = Math.max(0, next.startSec - nowSec);
-  return { next, deltaSec };
-}
-
 function isSailingWindowClosed(now){
   if (eventDateKey){
     const todayKey = dateKeyLocal(now);
@@ -862,8 +849,11 @@ function render(){
     return;
   }
 
-  // NEXT TASK (any row) — chain sorted same as Up next (tasks) below
-  const nextTaskInfo = secondsUntilNextMatching(now, null);
+  // NEXT TASK — same `taskChain` as Up next (tasks) (single source, like races)
+  const taskChain = chainAfterNowSec(nowSec, null);
+  const nextTaskInfo = taskChain.length
+    ? { next: taskChain[0], deltaSec: Math.max(0, taskChain[0].startSec - nowSec) }
+    : null;
 
   if (nextTaskInfo){
     const { next, deltaSec } = nextTaskInfo;
@@ -909,13 +899,12 @@ function render(){
 
   // Up next — after immediate next; omit repeated labels (see upcomingTaskListEvs).
   if (schedule.length){
-    const aheadTasks = chainAfterNowSec(nowSec, null);
-    const upcomingTaskEvs = upcomingTaskListEvs(aheadTasks);
+    const upcomingTaskEvs = upcomingTaskListEvs(taskChain);
 
     let tasksHtml;
     if (upcomingTaskEvs.length){
       tasksHtml = `<div class="listBlock-inner">${upcomingTaskEvs.map(ev => upNextLineHtml(ev)).join("")}</div>`;
-    } else if (!aheadTasks.length){
+    } else if (!taskChain.length){
       tasksHtml = "<div class=\"upnext-msg\">No upcoming tasks</div>";
     } else {
       tasksHtml = "<div class=\"upnext-msg muted\">No more tasks</div>";
