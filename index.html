@@ -386,8 +386,8 @@ const COL_NAME = 2;
 const DATE_CELL_ROW = 21 - 1; // 20
 const DATE_VALUE_COLS = [2, 3, 1]; // C, D, B — try in that order
 
-// Re-fetch published CSV this often so sheet edits show up quickly (display still updates every 1s)
-const SCHEDULE_REFRESH_MS = 1000;
+// Re-fetch published CSV this often (clock still updates every 1s). Slower poll reduces flaky CDN flip‑flop.
+const SCHEDULE_REFRESH_MS = 3000;
 
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
@@ -395,9 +395,10 @@ let windowEndSec = null; // sailing day ends at this second-of-day (local)
 let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from C21
 let loadError = "";
-/** Monotonic id so only the latest CSV fetch may commit (avoids out-of-order / stale responses). */
-let scheduleFetchGen = 0;
-let scheduleFetchAbort = null;
+/** One fetch at a time — avoids overlapping requests returning in random order from Google’s cache. */
+let scheduleLoadPromise = null;
+/** Raw CSV body last applied to `schedule` (skip re-parse when unchanged). */
+let lastCommittedCsvText = "";
 
 function escapeHtml(s){
   return String(s)
@@ -604,24 +605,27 @@ function schedulesEqual(a, b){
   return true;
 }
 
-async function loadSchedule(){
-  scheduleFetchGen += 1;
-  const gen = scheduleFetchGen;
-  if (scheduleFetchAbort){
-    try { scheduleFetchAbort.abort(); } catch { /* ignore */ }
-  }
-  const ac = new AbortController();
-  scheduleFetchAbort = ac;
-  const signal = ac.signal;
+/** Stable string for comparing published CSV bodies (line endings differ between responses). */
+function normalizeCsvBody(s){
+  return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+}
 
+async function loadSchedule(){
+  if (scheduleLoadPromise) return scheduleLoadPromise;
+
+  scheduleLoadPromise = (async () => {
   try{
     const url = csvUrl();
-    const res = await fetch(url, { cache: "no-store", signal });
-    if (gen !== scheduleFetchGen) return;
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`CSV fetch failed: ${res.status} ${res.statusText} (url: ${url})`);
 
     const txt = await res.text();
-    if (gen !== scheduleFetchGen) return;
+    const normTxt = normalizeCsvBody(txt);
+    if (normTxt === lastCommittedCsvText){
+      lastFetchMs = Date.now();
+      return;
+    }
+
     const rows = parseCSV(txt);
 
     const nextEventDateKey = parseEventDateFromRows(rows);
@@ -653,8 +657,6 @@ async function loadSchedule(){
       }
     }
 
-    if (gen !== scheduleFetchGen) return;
-
     let nextSchedule;
     let nextWindowEndSec;
     if (merged.length < 2){
@@ -675,8 +677,6 @@ async function loadSchedule(){
       nextWindowEndSec = merged[merged.length - 1].startMin * 60;
     }
 
-    if (gen !== scheduleFetchGen) return;
-
     const sameData =
       nextEventDateKey === eventDateKey &&
       nextLoadError === loadError &&
@@ -684,6 +684,7 @@ async function loadSchedule(){
       schedulesEqual(nextSchedule, schedule);
 
     if (sameData){
+      lastCommittedCsvText = normTxt;
       lastFetchMs = Date.now();
       return;
     }
@@ -692,11 +693,17 @@ async function loadSchedule(){
     loadError = nextLoadError;
     schedule = nextSchedule;
     windowEndSec = nextWindowEndSec;
+    lastCommittedCsvText = normTxt;
     lastFetchMs = Date.now();
   } catch (e){
-    if (e?.name === "AbortError") return;
-    if (gen !== scheduleFetchGen) return;
     loadError = "Couldn't load T-Minus sheet";
+  }
+  })();
+
+  try {
+    await scheduleLoadPromise;
+  } finally {
+    scheduleLoadPromise = null;
   }
 }
 
