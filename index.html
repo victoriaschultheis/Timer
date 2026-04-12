@@ -760,6 +760,23 @@ function raceChainAfterNowSec(nowSec){
   return dedupeRacePhasesByLogicalRace(chainAfterNowSec(nowSec, isRace));
 }
 
+/**
+ * Phases for “Up next (tasks)”: everything after the immediate next, but skip extra rows that repeat
+ * the same label on the next minute (common in sheets). Avoids 13:50 vs 13:51 duplicate lines.
+ */
+function upcomingTaskListEvs(aheadTasks){
+  if (!aheadTasks.length) return [];
+  const immediate = aheadTasks[0];
+  let rest = aheadTasks.slice(1);
+  const im = (immediate.name || "").trim().toLowerCase();
+  if (im){
+    while (rest.length && (rest[0].name || "").trim().toLowerCase() === im){
+      rest = rest.slice(1);
+    }
+  }
+  return rest.slice(0, 3);
+}
+
 /** One entry per start time (sheet sometimes has two rows at the same boundary). */
 function dedupeByStartSec(phases){
   const out = [];
@@ -890,10 +907,10 @@ function render(){
     document.getElementById("active").textContent = "";
   }
 
-  // Up next — rows after the immediate next (same chains as countdown boxes above).
+  // Up next — after immediate next; omit repeated labels (see upcomingTaskListEvs).
   if (schedule.length){
     const aheadTasks = chainAfterNowSec(nowSec, null);
-    const upcomingTaskEvs = aheadTasks.slice(1, 4);
+    const upcomingTaskEvs = upcomingTaskListEvs(aheadTasks);
 
     let tasksHtml;
     if (upcomingTaskEvs.length){
