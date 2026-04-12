@@ -217,6 +217,21 @@
       align-items: center;
       justify-content: flex-start;
     }
+    .box-up-next {
+      min-height: 0;
+    }
+    .box-up-next .upnext-body {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: stretch;
+      min-height: 5.5em;
+    }
+    .box-up-next .upnext-body .listBlock {
+      min-height: 0;
+      justify-content: center;
+    }
     /* One column, left-aligned text; whole column centered in the box so times line up */
     .listBlock-inner {
       display: flex;
@@ -256,6 +271,14 @@
       min-width: 0;
       word-break: break-word;
     }
+    .upnext-line--name-only {
+      display: block;
+      width: 100%;
+      text-align: left;
+    }
+    .upnext-line--name-only .upnext-name {
+      display: block;
+    }
     .titleReserve {
       min-height: 2.35em;
       width: 100%;
@@ -269,8 +292,7 @@
       width: 100%;
       text-align: center;
     }
-    #active,
-    #raceMeta {
+    #active {
       width: 100%;
       text-align: center;
     }
@@ -320,18 +342,21 @@
             <div class="kpi">
               <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
             </div>
-            <div class="small muted" id="raceMeta"></div>
           </div>
         </div>
 
         <div class="grid2">
-          <div class="box">
+          <div class="box box-up-next">
             <div class="label">Up next (tasks)</div>
-            <div id="upNextTasks" class="small listBlock muted">Loading…</div>
+            <div class="upnext-body">
+              <div id="upNextTasks" class="small listBlock muted">Loading…</div>
+            </div>
           </div>
-          <div class="box raceBox">
+          <div class="box raceBox box-up-next">
             <div class="label">Up next (races)</div>
-            <div id="upNextRaces" class="small listBlock muted">Loading…</div>
+            <div class="upnext-body">
+              <div id="upNextRaces" class="small listBlock muted">Loading…</div>
+            </div>
           </div>
         </div>
 
@@ -388,6 +413,12 @@ function upNextLineHtml(ev){
   const t = formatHMfromSeconds(ev.startSec);
   const n = escapeHtml(ev.name || "(no label)");
   return `<div class="upnext-line"><span class="upnext-time nums">${t}</span><span class="upnext-sep">—</span><span class="upnext-name">${n}</span></div>`;
+}
+
+/** Up next (races): label only, no leading time */
+function upNextRaceLineHtml(ev){
+  const n = escapeHtml(ev.name || "(no label)");
+  return `<div class="upnext-line upnext-line--name-only"><span class="upnext-name">${n}</span></div>`;
 }
 
 function pad2(n){ return String(n).padStart(2,"0"); }
@@ -746,7 +777,6 @@ function render(){
     const raceCd = document.getElementById("raceCountdown");
     raceCd.textContent = "SAILING WINDOW CLOSED";
     raceCd.classList.add("is-closed");
-    document.getElementById("raceMeta").textContent = "";
 
     document.getElementById("upNextTasks").innerHTML = "";
     document.getElementById("upNextRaces").innerHTML = "";
@@ -781,13 +811,11 @@ function render(){
     const raceCd = document.getElementById("raceCountdown");
     raceCd.textContent = formatCountdown(deltaSec);
     raceCd.classList.remove("is-closed");
-    document.getElementById("raceMeta").textContent = `Race time: ${formatHMwithFixedSec(next.startSec)}`;
   } else {
     document.getElementById("raceCountdownTitle").textContent = schedule.length ? "No upcoming races" : "";
     const raceCd = document.getElementById("raceCountdown");
     raceCd.textContent = "--:--:--";
     raceCd.classList.remove("is-closed");
-    document.getElementById("raceMeta").textContent = "";
   }
 
   const nowSec = nowSecondsOfDay(now);
@@ -829,7 +857,7 @@ function render(){
 
     let racesHtml;
     if (upcomingRaceEvs.length){
-      racesHtml = `<div class="listBlock-inner">${upcomingRaceEvs.map(ev => upNextLineHtml(ev)).join("")}</div>`;
+      racesHtml = `<div class="listBlock-inner">${upcomingRaceEvs.map(ev => upNextRaceLineHtml(ev)).join("")}</div>`;
     } else if (!aheadRaces.length){
       racesHtml = "<div class=\"upnext-msg\">No upcoming races</div>";
     } else {
