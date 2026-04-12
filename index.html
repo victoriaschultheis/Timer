@@ -131,6 +131,51 @@ let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from C21
 let loadError = "";
 
+function timeZoneNameFallback(){
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+}
+
+/** Build a short place line from BigDataCloud reverse-geocode-client JSON. */
+function formatPlaceFromGeocode(d){
+  const place = (d.locality || d.city || "").trim();
+  const region = (d.principalSubdivision || "").trim();
+  if (place && region && place !== region) return `${place}, ${region}`;
+  if (place) return place;
+  if (region) return region;
+  if (d.countryName) return d.countryName;
+  return timeZoneNameFallback();
+}
+
+/** Sets #tz once: city/region from GPS, or timezone if location is unavailable. */
+function startLocationLabel(){
+  const el = document.getElementById("tz");
+  el.textContent = "Locating…";
+  if (!navigator.geolocation){
+    el.textContent = timeZoneNameFallback();
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      try{
+        const { latitude, longitude } = pos.coords;
+        const url =
+          "https://api.bigdatacloud.net/data/reverse-geocode-client" +
+          `?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&localityLanguage=en`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("reverse geocode");
+        const data = await res.json();
+        el.textContent = formatPlaceFromGeocode(data);
+      } catch {
+        el.textContent = timeZoneNameFallback();
+      }
+    },
+    () => {
+      el.textContent = timeZoneNameFallback();
+    },
+    { enableHighAccuracy: false, maximumAge: 300000, timeout: 20000 }
+  );
+}
+
 function pad2(n){ return String(n).padStart(2,"0"); }
 
 function formatHMS(d){
@@ -427,29 +472,25 @@ function findActive(now){
 function render(){
   const now = new Date();
   document.getElementById("now").textContent = formatHMS(now);
-  document.getElementById("tz").textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
 
   document.getElementById("msg").textContent = loadError;
 
   const closed = isSailingWindowClosed(now);
   if (closed){
     document.getElementById("nextTaskTime").textContent = "--:--:--";
-    document.getElementById("nextTaskName").textContent = "SAILING WINDOW CLOSED";
+    document.getElementById("nextTaskName").textContent = "—";
 
     document.getElementById("taskCountdownTitle").textContent = "";
     document.getElementById("taskCountdown").textContent = "--:--:--";
     document.getElementById("active").textContent = "";
 
     document.getElementById("raceCountdownTitle").textContent = "";
-    document.getElementById("raceCountdown").textContent = "--:--:--";
+    document.getElementById("raceCountdown").textContent = "Sailing window closed.";
     document.getElementById("raceMeta").textContent = "";
 
-    document.getElementById("upNextTasks").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
-    document.getElementById("upNextRaces").innerHTML = "<div>SAILING WINDOW CLOSED</div>";
+    document.getElementById("upNextTasks").innerHTML = "";
+    document.getElementById("upNextRaces").innerHTML = "";
 
-    if (eventDateKey && !loadError){
-      document.getElementById("msg").textContent = `Sailing window ended · Event date: ${eventDateKey}`;
-    }
     return;
   }
 
@@ -552,6 +593,7 @@ async function tick(){
 }
 
 (async function init(){
+  startLocationLabel();
   if (!CSV_URL_BASE){
     document.getElementById("msg").textContent = "CSV_URL_BASE is empty.";
   } else {
