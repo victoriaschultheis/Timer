@@ -212,11 +212,38 @@
     .listBlock {
       min-height: 4em;
       width: 100%;
-      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.35em;
     }
-    .listBlock > div {
+    .listBlock > .upnext-msg {
       width: 100%;
       text-align: center;
+    }
+    .upnext-line {
+      display: grid;
+      grid-template-columns: 5.25ch auto minmax(0, max-content);
+      gap: 0 0.45em;
+      align-items: baseline;
+      justify-items: start;
+      width: max-content;
+      max-width: 100%;
+      text-align: left;
+    }
+    .upnext-time {
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1;
+      text-align: right;
+      justify-self: end;
+    }
+    .upnext-sep {
+      opacity: 0.65;
+      justify-self: center;
+    }
+    .upnext-name {
+      min-width: 0;
+      word-break: break-word;
     }
     .titleReserve {
       min-height: 2.35em;
@@ -336,6 +363,21 @@ let loadError = "";
 /** Monotonic id so only the latest CSV fetch may commit (avoids out-of-order / stale responses). */
 let scheduleFetchGen = 0;
 let scheduleFetchAbort = null;
+
+function escapeHtml(s){
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** One row in Up next: fixed-width time column so times line up; whole block centered in the panel. */
+function upNextLineHtml(ev){
+  const t = formatHMfromSeconds(ev.startSec);
+  const n = escapeHtml(ev.name || "(no label)");
+  return `<div class="upnext-line"><span class="upnext-time nums">${t}</span><span class="upnext-sep">—</span><span class="upnext-name">${n}</span></div>`;
+}
 
 function pad2(n){ return String(n).padStart(2,"0"); }
 
@@ -509,6 +551,18 @@ function parseCSV(text){
   return rows;
 }
 
+function scheduleSnapshotKey(ev){
+  return `${ev.startSec}|${ev.endSec}|${ev.name}|${ev.timeStr}`;
+}
+
+function schedulesEqual(a, b){
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++){
+    if (scheduleSnapshotKey(a[i]) !== scheduleSnapshotKey(b[i])) return false;
+  }
+  return true;
+}
+
 async function loadSchedule(){
   scheduleFetchGen += 1;
   const gen = scheduleFetchGen;
@@ -520,7 +574,6 @@ async function loadSchedule(){
   const signal = ac.signal;
 
   try{
-    loadError = "";
     const url = csvUrl();
     const res = await fetch(url, { cache: "no-store", signal });
     if (gen !== scheduleFetchGen) return;
@@ -530,9 +583,10 @@ async function loadSchedule(){
     if (gen !== scheduleFetchGen) return;
     const rows = parseCSV(txt);
 
-    eventDateKey = parseEventDateFromRows(rows);
-    if (!eventDateKey){
-      loadError =
+    const nextEventDateKey = parseEventDateFromRows(rows);
+    let nextLoadError = "";
+    if (!nextEventDateKey){
+      nextLoadError =
         "Could not parse event date (put it in C21 or D21, or a “Date” row with the value in B/C/D). Use YYYY-MM-DD or DD/MM/YYYY.";
     }
 
@@ -547,8 +601,6 @@ async function loadSchedule(){
 
     markers.sort((a, b) => a.startMin - b.startMin);
 
-    // Two rows at the same clock time create two phases with the same startSec (e.g. 10:00→10:00
-    // and 10:00→11:00). “Up next” then showed that time twice after skipping the hero row.
     const merged = [];
     for (const m of markers){
       const prev = merged[merged.length - 1];
@@ -559,28 +611,46 @@ async function loadSchedule(){
         merged.push({ startMin: m.startMin, name: m.name, timeStr: m.timeStr });
       }
     }
-    markers.length = 0;
-    markers.push(...merged);
 
     if (gen !== scheduleFetchGen) return;
 
-    if (markers.length < 2){
-      schedule = [];
-      windowEndSec = markers.length === 1 ? markers[0].startMin * 60 : null;
+    let nextSchedule;
+    let nextWindowEndSec;
+    if (merged.length < 2){
+      nextSchedule = [];
+      nextWindowEndSec = merged.length === 1 ? merged[0].startMin * 60 : null;
     } else {
       const phases = [];
-      for (let i = 0; i < markers.length - 1; i++){
+      for (let i = 0; i < merged.length - 1; i++){
         phases.push({
-          startSec: markers[i].startMin * 60,
-          endSec: markers[i + 1].startMin * 60,
-          startMin: markers[i].startMin,
-          name: markers[i].name,
-          timeStr: markers[i].timeStr,
+          startSec: merged[i].startMin * 60,
+          endSec: merged[i + 1].startMin * 60,
+          startMin: merged[i].startMin,
+          name: merged[i].name,
+          timeStr: merged[i].timeStr,
         });
       }
-      schedule = phases;
-      windowEndSec = markers[markers.length - 1].startMin * 60;
+      nextSchedule = phases;
+      nextWindowEndSec = merged[merged.length - 1].startMin * 60;
     }
+
+    if (gen !== scheduleFetchGen) return;
+
+    const sameData =
+      nextEventDateKey === eventDateKey &&
+      nextLoadError === loadError &&
+      nextWindowEndSec === windowEndSec &&
+      schedulesEqual(nextSchedule, schedule);
+
+    if (sameData){
+      lastFetchMs = Date.now();
+      return;
+    }
+
+    eventDateKey = nextEventDateKey;
+    loadError = nextLoadError;
+    schedule = nextSchedule;
+    windowEndSec = nextWindowEndSec;
     lastFetchMs = Date.now();
   } catch (e){
     if (e?.name === "AbortError") return;
@@ -726,17 +796,15 @@ function render(){
         .filter(ev => ev.startSec > nowSec)
         .sort((a, b) => a.startSec - b.startSec)
     );
-    const upcomingTasks = aheadTasks
-      .slice(1, 4)
-      .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
+    const upcomingTaskEvs = aheadTasks.slice(1, 4);
 
     let tasksHtml;
-    if (upcomingTasks.length){
-      tasksHtml = upcomingTasks.map(line => `<div>${line}</div>`).join("");
+    if (upcomingTaskEvs.length){
+      tasksHtml = upcomingTaskEvs.map(ev => upNextLineHtml(ev)).join("");
     } else if (!aheadTasks.length){
-      tasksHtml = "<div>No upcoming tasks</div>";
+      tasksHtml = "<div class=\"upnext-msg\">No upcoming tasks</div>";
     } else {
-      tasksHtml = "<div class=\"muted\">No more tasks</div>";
+      tasksHtml = "<div class=\"upnext-msg muted\">No more tasks</div>";
     }
     document.getElementById("upNextTasks").innerHTML = tasksHtml;
 
@@ -746,17 +814,15 @@ function render(){
         .filter(ev => ev.startSec > nowSec)
         .sort((a, b) => a.startSec - b.startSec)
     );
-    const upcomingRaces = aheadRaces
-      .slice(1, 4)
-      .map(ev => `${formatHMfromSeconds(ev.startSec)} — ${ev.name || "(no label)"}`);
+    const upcomingRaceEvs = aheadRaces.slice(1, 4);
 
     let racesHtml;
-    if (upcomingRaces.length){
-      racesHtml = upcomingRaces.map(line => `<div>${line}</div>`).join("");
+    if (upcomingRaceEvs.length){
+      racesHtml = upcomingRaceEvs.map(ev => upNextLineHtml(ev)).join("");
     } else if (!aheadRaces.length){
-      racesHtml = "<div>No upcoming races</div>";
+      racesHtml = "<div class=\"upnext-msg\">No upcoming races</div>";
     } else {
-      racesHtml = "<div class=\"muted\">No more races</div>";
+      racesHtml = "<div class=\"upnext-msg muted\">No more races</div>";
     }
     document.getElementById("upNextRaces").innerHTML = racesHtml;
   } else {
