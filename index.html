@@ -191,10 +191,10 @@
       box-sizing: border-box;
     }
     #raceCountdown.is-closed {
-      font-size: clamp(13px, 2.05vw, 20px);
+      font-size: clamp(15px, 2.65vw, 26px);
       font-weight: 700;
-      line-height: 1.12;
-      letter-spacing: 0.055em;
+      line-height: 1.08;
+      letter-spacing: 0.045em;
       text-transform: uppercase;
       color: var(--race-digits);
       white-space: normal;
@@ -214,9 +214,17 @@
       width: 100%;
       text-align: center;
     }
+    .listBlock > div {
+      width: 100%;
+      text-align: center;
+    }
     .titleReserve {
       min-height: 2.35em;
       width: 100%;
+      text-align: center;
+    }
+    #taskCountdownTitle,
+    #raceCountdownTitle {
       text-align: center;
     }
     #nextTaskName {
@@ -316,8 +324,8 @@ const COL_NAME = 2;
 const DATE_CELL_ROW = 21 - 1; // 20
 const DATE_VALUE_COLS = [2, 3, 1]; // C, D, B — try in that order
 
-// Refresh schedule from CSV every N seconds (UI clock still ticks every second)
-const SCHEDULE_REFRESH_SECONDS = 4;
+// Re-fetch published CSV this often so sheet edits show up quickly (display still updates every 1s)
+const SCHEDULE_REFRESH_MS = 1000;
 
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
@@ -688,11 +696,8 @@ function render(){
   if (active?.name){
     const ends = formatHMwithFixedSec(active.endSec);
     document.getElementById("active").textContent = `NOW: ${active.name} · until ${ends}`;
-  } else if (schedule.length && nowSec < schedule[0].startSec){
-    document.getElementById("active").textContent =
-      ``;
   } else {
-    document.getElementById("active").textContent = schedule.length ? "Between scheduled blocks" : "";
+    document.getElementById("active").textContent = "";
   }
 
   // Up next — starts *after* the immediate next item (same as countdown boxes above),
@@ -713,7 +718,7 @@ function render(){
     } else if (!aheadTasks.length){
       tasksHtml = "<div>No upcoming tasks</div>";
     } else {
-      tasksHtml = "<div class=\"muted\">Nothing scheduled after that</div>";
+      tasksHtml = "<div class=\"muted\">No more tasks</div>";
     }
     document.getElementById("upNextTasks").innerHTML = tasksHtml;
 
@@ -733,7 +738,7 @@ function render(){
     } else if (!aheadRaces.length){
       racesHtml = "<div>No upcoming races</div>";
     } else {
-      racesHtml = "<div class=\"muted\">Nothing scheduled after that</div>";
+      racesHtml = "<div class=\"muted\">No more races</div>";
     }
     document.getElementById("upNextRaces").innerHTML = racesHtml;
   } else {
@@ -744,7 +749,7 @@ function render(){
 
 async function tick(){
   const nowMs = Date.now();
-  if (!lastFetchMs || (nowMs - lastFetchMs) > SCHEDULE_REFRESH_SECONDS*1000){
+  if (!lastFetchMs || (nowMs - lastFetchMs) > SCHEDULE_REFRESH_MS){
     await loadSchedule();
   }
   render();
