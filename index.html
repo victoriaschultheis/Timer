@@ -371,6 +371,7 @@
  * - column A: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
  *   The last time is end-of-window (no separate block after it). Column B is ignored.
  * - column C: name/description for the block that starts at that row’s time
+ * Schedule markers: only from sheet row 30 downward (rows above are ignored for T‑minus phases).
  * Event date: row 21 in column C or D, or any row whose column A is “Date” (value in B, C, or D).
  */
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=2132763229&single=true&output=csv";
@@ -385,6 +386,9 @@ const COL_NAME = 2;
 // Event date row (1-based row 21 → index 20). Value may be in C or D depending on layout.
 const DATE_CELL_ROW = 21 - 1; // 20
 const DATE_VALUE_COLS = [2, 3, 1]; // C, D, B — try in that order
+
+// T‑minus times/names: only read from this row onward (1-based sheet row 30 → index 29).
+const SCHEDULE_FIRST_ROW_INDEX = 30 - 1;
 
 // Re-fetch published CSV this often (clock still updates every 1s). Paired with two-fetch confirm below.
 const SCHEDULE_REFRESH_MS = 10000;
@@ -649,7 +653,7 @@ async function loadSchedule(){
     }
 
     const markers = [];
-    for (let r = 0; r < rows.length; r++){
+    for (let r = SCHEDULE_FIRST_ROW_INDEX; r < rows.length; r++){
       const timeStr = (rows[r][COL_TIME] ?? "").trim();
       const name = (rows[r][COL_NAME] ?? "").trim();
       const startMin = parseTimeToMinutes(timeStr);
