@@ -284,7 +284,6 @@
       width: 100%;
       text-align: center;
     }
-    #taskCountdownTitle,
     #raceCountdownTitle {
       text-align: center;
     }
@@ -292,9 +291,68 @@
       width: 100%;
       text-align: center;
     }
-    #active {
+    .box-task-timers {
+      min-height: 0;
+    }
+    .task-timers-scroll {
+      display: flex;
+      flex-direction: column;
+      gap: clamp(0.35rem, 1.2vmin, 0.5rem);
       width: 100%;
+      max-height: min(52vh, 440px);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 0.15rem 0;
+      -webkit-overflow-scrolling: touch;
+    }
+    .task-timer-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.5rem 0.75rem;
+      align-items: center;
+      padding: clamp(0.45rem, 1.4vmin, 0.65rem) clamp(0.5rem, 1.8vmin, 0.85rem);
+      border-radius: clamp(8px, 1vmin, 11px);
+      background: rgba(75, 85, 98, 0.07);
+      text-align: left;
+      box-sizing: border-box;
+      min-width: 0;
+    }
+    .task-timer-row.is-active {
+      background: rgba(75, 85, 98, 0.2);
+    }
+    .task-timer-meta {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.12em;
+      align-items: flex-start;
+    }
+    .task-timer-start {
+      font-size: clamp(12px, min(1.6vw, 1.9vh), 15px);
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.02em;
+    }
+    .task-timer-name {
+      font-size: clamp(13px, min(1.85vw, 2.2vh), 18px);
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.2;
+      word-break: break-word;
+    }
+    .task-timer-nums {
+      font-weight: 800;
+      font-size: clamp(20px, min(4.2vw, 5vh), 40px);
+      line-height: 1;
+      color: var(--digits);
+      flex-shrink: 0;
+      align-self: center;
+    }
+    .task-timers-empty {
       text-align: center;
+      color: var(--text-muted);
+      font-size: clamp(13px, min(2vw, 2.4vh), 18px);
+      padding: 0.75rem 0;
     }
     #msg {
       width: 100%;
@@ -326,13 +384,9 @@
         </div>
 
         <div class="split">
-          <div class="box">
-            <div class="label">Countdown to next task</div>
-            <div id="taskCountdownTitle" class="small muted titleReserve" style="margin-bottom:.35rem;"></div>
-            <div class="kpi">
-              <div class="slot-big"><div id="taskCountdown" class="big nums bigW">00:00:00</div></div>
-            </div>
-            <div id="active" class="small muted"></div>
+          <div class="box box-task-timers">
+            <div class="label">Task countdowns</div>
+            <div id="taskTimersList" class="task-timers-scroll" aria-live="polite"></div>
             <div id="msg" class="small error"></div>
           </div>
 
@@ -825,6 +879,39 @@ function findActive(now){
   return null;
 }
 
+/** One row per phase not yet ended: countdown to start (future) or time left in block (active). Active row shaded via CSS. */
+function buildTaskTimersHtml(schedule, nowSec, activeEv){
+  if (!schedule.length){
+    return "<div class=\"task-timers-empty\">No tasks loaded</div>";
+  }
+  const activeStart = activeEv ? activeEv.startSec : null;
+  const parts = [];
+  for (const ev of schedule){
+    if (nowSec >= ev.endSec) continue;
+    const isActive = activeStart !== null && ev.startSec === activeStart;
+    let deltaSec;
+    if (nowSec < ev.startSec) deltaSec = ev.startSec - nowSec;
+    else deltaSec = ev.endSec - nowSec;
+    const cls = isActive ? "task-timer-row is-active" : "task-timer-row";
+    const tStart = formatHMwithFixedSec(ev.startSec);
+    const name = escapeHtml(ev.name || "(no label)");
+    const cd = formatCountdown(Math.max(0, deltaSec));
+    parts.push(
+      `<div class="${cls}">` +
+        `<div class="task-timer-meta">` +
+        `<span class="task-timer-start nums">${tStart}</span>` +
+        `<span class="task-timer-name">${name}</span>` +
+        `</div>` +
+        `<div class="task-timer-nums nums">${cd}</div>` +
+        `</div>`
+    );
+  }
+  if (!parts.length){
+    return "<div class=\"task-timers-empty\">No more tasks today</div>";
+  }
+  return parts.join("");
+}
+
 function render(){
   const now = new Date();
   const nowSec = nowSecondsOfDay(now);
@@ -838,9 +925,7 @@ function render(){
     document.getElementById("nextTaskName").textContent = "—";
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
 
-    document.getElementById("taskCountdownTitle").textContent = "";
-    document.getElementById("taskCountdown").textContent = "--:--:--";
-    document.getElementById("active").textContent = "";
+    document.getElementById("taskTimersList").innerHTML = "";
 
     document.getElementById("raceCountdownTitle").textContent = "";
     const raceCd = document.getElementById("raceCountdown");
@@ -860,19 +945,18 @@ function render(){
     : null;
 
   if (nextTaskInfo){
-    const { next, deltaSec } = nextTaskInfo;
+    const { next } = nextTaskInfo;
     document.getElementById("nextTaskTime").textContent = formatHMwithFixedSec(next.startSec);
     document.getElementById("nextTaskName").textContent = next.name ? next.name : "—";
     document.getElementById("nextTaskBox").classList.remove("next-task-empty");
-    document.getElementById("taskCountdownTitle").textContent = next.name ? next.name : "";
-    document.getElementById("taskCountdown").textContent = formatCountdown(deltaSec);
   } else {
     document.getElementById("nextTaskTime").textContent = "";
     document.getElementById("nextTaskName").textContent = "No upcoming tasks";
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
-    document.getElementById("taskCountdownTitle").textContent = "";
-    document.getElementById("taskCountdown").textContent = "--:--:--";
   }
+
+  const active = findActive(now);
+  document.getElementById("taskTimersList").innerHTML = buildTaskTimersHtml(schedule, nowSec, active);
 
   // NEXT RACE — one entry per logical race (see dedupeRacePhasesByLogicalRace)
   const raceChain = raceChainAfterNowSec(nowSec);
@@ -891,14 +975,6 @@ function render(){
     const raceCd = document.getElementById("raceCountdown");
     raceCd.textContent = "--:--:--";
     raceCd.classList.remove("is-closed");
-  }
-
-  const active = findActive(now);
-  if (active?.name){
-    const ends = formatHMwithFixedSec(active.endSec);
-    document.getElementById("active").textContent = `NOW: ${active.name} · until ${ends}`;
-  } else {
-    document.getElementById("active").textContent = "";
   }
 
   // Up next — after immediate next; omit repeated labels (see upcomingTaskListEvs).
