@@ -348,7 +348,7 @@
       flex-shrink: 0;
       align-self: center;
     }
-    /* Immediate next row while current task runs — no second timer (same instant as active’s end). */
+    /* Active row when the live countdown is shown on the next task row instead (see buildTaskTimersHtml). */
     .task-timer-nums--pending {
       min-width: 9ch;
       display: inline-block;
@@ -860,9 +860,9 @@ function findActive(now){
 }
 
 /**
- * Active row: countdown = time left until the *current* task block ends (only live “to current task” timer).
- * Ended: 00:00:00. Other futures: time until that phase starts — except the single row *right after*
- * the active one (same schedule boundary): that would duplicate the same ticking value, so we show no second timer.
+ * Time to the *next* boundary (when the upcoming task starts) runs in that task’s row — not on the active row above.
+ * While current task runs and a next row exists at the same boundary, the active row shows a dash; the next row ticks.
+ * Last task of the day (no following row): active row shows time left. Ended: 00:00:00. Other futures: time until start.
  */
 function buildTaskTimersHtml(schedule, nowSec, activeEv){
   if (!schedule.length){
@@ -872,6 +872,10 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
   const activeIdx = activeEv
     ? schedule.findIndex(e => e.startSec === activeEv.startSec)
     : -1;
+  const hasImmediateNext =
+    activeIdx >= 0 &&
+    activeIdx + 1 < schedule.length &&
+    schedule[activeIdx + 1].startSec === schedule[activeIdx].endSec;
   const parts = [];
   for (let i = 0; i < schedule.length; i++){
     const ev = schedule[i];
@@ -885,22 +889,18 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
       cd = "00:00:00";
     } else if (future){
       cls = "task-timer-row";
-      const wouldDuplicateActiveCountdown =
-        activeIdx >= 0 &&
-        i === activeIdx + 1 &&
-        ev.startSec === schedule[activeIdx].endSec;
-      if (wouldDuplicateActiveCountdown){
-        cd = "";
-        numsExtraClass = " task-timer-nums--pending";
-      } else {
-        const deltaSec = ev.startSec - nowSec;
-        cd = formatCountdown(Math.max(0, deltaSec));
-      }
+      const deltaSec = ev.startSec - nowSec;
+      cd = formatCountdown(Math.max(0, deltaSec));
     } else {
       const isActive = activeStart !== null && ev.startSec === activeStart;
       cls = isActive ? "task-timer-row is-active" : "task-timer-row";
       const deltaSec = ev.endSec - nowSec;
-      cd = formatCountdown(Math.max(0, deltaSec));
+      if (isActive && hasImmediateNext){
+        cd = "";
+        numsExtraClass = " task-timer-nums--pending";
+      } else {
+        cd = formatCountdown(Math.max(0, deltaSec));
+      }
     }
     const tStart = formatHMwithFixedSec(ev.startSec);
     const name = escapeHtml(ev.name || "(no label)");
