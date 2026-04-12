@@ -348,6 +348,12 @@
       flex-shrink: 0;
       align-self: center;
     }
+    /* Next row shares this boundary — no second live timer (see buildTaskTimersHtml). */
+    .task-timer-nums--pending {
+      color: var(--text-muted);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
     .task-timers-empty {
       text-align: center;
       color: var(--text-muted);
@@ -847,7 +853,11 @@ function findActive(now){
   return null;
 }
 
-/** One row per phase: future → time to start; ended → fixed 00:00:00 (no live countdown); active → time left. Only `.is-active` is shaded (CSS). */
+/**
+ * One row per phase: ended → 00:00:00; active → time left in block; future → time until start.
+ * If the next phase starts exactly when the current block ends, both would show the same ticking
+ * value — we show a placeholder on that future row until the boundary passes (only one live timer).
+ */
 function buildTaskTimersHtml(schedule, nowSec, activeEv){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
@@ -859,13 +869,21 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
     const future = nowSec < ev.startSec;
     let cls;
     let cd;
+    let numsExtraClass = "";
     if (ended){
       cls = "task-timer-row";
       cd = "00:00:00";
     } else if (future){
       cls = "task-timer-row";
-      const deltaSec = ev.startSec - nowSec;
-      cd = formatCountdown(Math.max(0, deltaSec));
+      const sharesBoundary =
+        activeEv != null && ev.startSec === activeEv.endSec;
+      if (sharesBoundary){
+        cd = "—:—:—";
+        numsExtraClass = " task-timer-nums--pending";
+      } else {
+        const deltaSec = ev.startSec - nowSec;
+        cd = formatCountdown(Math.max(0, deltaSec));
+      }
     } else {
       const isActive = activeStart !== null && ev.startSec === activeStart;
       cls = isActive ? "task-timer-row is-active" : "task-timer-row";
@@ -880,7 +898,7 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
         `<span class="task-timer-start nums">${tStart}</span>` +
         `<span class="task-timer-name">${name}</span>` +
         `</div>` +
-        `<div class="task-timer-nums nums">${cd}</div>` +
+        `<div class="task-timer-nums nums${numsExtraClass}">${cd}</div>` +
         `</div>`
     );
   }
