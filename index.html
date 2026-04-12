@@ -333,6 +333,9 @@ let windowEndSec = null; // sailing day ends at this second-of-day (local)
 let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from C21
 let loadError = "";
+/** Monotonic id so only the latest CSV fetch may commit (avoids out-of-order / stale responses). */
+let scheduleFetchGen = 0;
+let scheduleFetchAbort = null;
 
 function pad2(n){ return String(n).padStart(2,"0"); }
 
@@ -507,13 +510,24 @@ function parseCSV(text){
 }
 
 async function loadSchedule(){
+  scheduleFetchGen += 1;
+  const gen = scheduleFetchGen;
+  if (scheduleFetchAbort){
+    try { scheduleFetchAbort.abort(); } catch { /* ignore */ }
+  }
+  const ac = new AbortController();
+  scheduleFetchAbort = ac;
+  const signal = ac.signal;
+
   try{
     loadError = "";
     const url = csvUrl();
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(url, { cache: "no-store", signal });
+    if (gen !== scheduleFetchGen) return;
     if (!res.ok) throw new Error(`CSV fetch failed: ${res.status} ${res.statusText} (url: ${url})`);
 
     const txt = await res.text();
+    if (gen !== scheduleFetchGen) return;
     const rows = parseCSV(txt);
 
     eventDateKey = parseEventDateFromRows(rows);
@@ -548,6 +562,8 @@ async function loadSchedule(){
     markers.length = 0;
     markers.push(...merged);
 
+    if (gen !== scheduleFetchGen) return;
+
     if (markers.length < 2){
       schedule = [];
       windowEndSec = markers.length === 1 ? markers[0].startMin * 60 : null;
@@ -567,6 +583,8 @@ async function loadSchedule(){
     }
     lastFetchMs = Date.now();
   } catch (e){
+    if (e?.name === "AbortError") return;
+    if (gen !== scheduleFetchGen) return;
     loadError = "Couldn't load T-Minus sheet";
   }
 }
