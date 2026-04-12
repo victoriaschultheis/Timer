@@ -320,6 +320,21 @@
     .task-timer-row.is-active {
       background: rgba(75, 85, 98, 0.2);
     }
+    .task-timer-row.is-ended {
+      background: rgba(75, 85, 98, 0.05);
+      opacity: 0.9;
+    }
+    .task-timer-row.is-ended .task-timer-nums {
+      color: var(--text-muted);
+    }
+    /* Other future tasks — lighter timer; “next” task is darker (below). */
+    .task-timer-row:not(.is-ended):not(.is-active):not(.is-next) .task-timer-nums {
+      color: #8f98a3;
+    }
+    .task-timer-row.is-next .task-timer-nums {
+      color: #343b46;
+      font-weight: 900;
+    }
     .task-timer-meta {
       min-width: 0;
       display: flex;
@@ -399,18 +414,10 @@
           </div>
         </div>
 
-        <div class="grid2">
-          <div class="box box-up-next">
-            <div class="label">Up next (tasks)</div>
-            <div class="upnext-body">
-              <div id="upNextTasks" class="small listBlock muted">Loading…</div>
-            </div>
-          </div>
-          <div class="box raceBox box-up-next">
-            <div class="label">Up next (races)</div>
-            <div class="upnext-body">
-              <div id="upNextRaces" class="small listBlock muted">Loading…</div>
-            </div>
+        <div class="box raceBox box-up-next">
+          <div class="label">Up next (races)</div>
+          <div class="upnext-body">
+            <div id="upNextRaces" class="small listBlock muted">Loading…</div>
           </div>
         </div>
 
@@ -466,13 +473,6 @@ function escapeHtml(s){
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-/** One row in Up next: same HH:MM:00 as “Next task time” (single formatter, no mismatch). */
-function upNextLineHtml(ev){
-  const t = formatHMwithFixedSec(ev.startSec);
-  const n = escapeHtml(ev.name || "(no label)");
-  return `<div class="upnext-line"><span class="upnext-time nums">${t}</span><span class="upnext-sep">—</span><span class="upnext-name">${n}</span></div>`;
 }
 
 /** Up next (races): label only, no leading time */
@@ -818,23 +818,6 @@ function raceChainAfterNowSec(nowSec){
   return dedupeRacePhasesByLogicalRace(chainAfterNowSec(nowSec, isRace));
 }
 
-/**
- * Phases for “Up next (tasks)”: everything after the immediate next, but skip extra rows that repeat
- * the same label on the next minute (common in sheets). Avoids 13:50 vs 13:51 duplicate lines.
- */
-function upcomingTaskListEvs(aheadTasks){
-  if (!aheadTasks.length) return [];
-  const immediate = aheadTasks[0];
-  let rest = aheadTasks.slice(1);
-  const im = (immediate.name || "").trim().toLowerCase();
-  if (im){
-    while (rest.length && (rest[0].name || "").trim().toLowerCase() === im){
-      rest = rest.slice(1);
-    }
-  }
-  return rest.slice(0, 3);
-}
-
 /** One entry per start time (sheet sometimes has two rows at the same boundary). */
 function dedupeByStartSec(phases){
   const out = [];
@@ -845,7 +828,7 @@ function dedupeByStartSec(phases){
   return out;
 }
 
-/** Phases with start after `nowSec`, time-sorted and deduped — same basis for “next” hero and Up next lists. */
+/** Phases with start after `nowSec`, time-sorted and deduped — same basis for “Next task time” hero. */
 function chainAfterNowSec(nowSec, predicate){
   if (!schedule.length) return [];
   const base = predicate ? schedule.filter(predicate) : schedule.slice();
@@ -879,20 +862,30 @@ function findActive(now){
   return null;
 }
 
-/** One row per phase not yet ended: countdown to start (future) or time left in block (active). Active row shaded via CSS. */
-function buildTaskTimersHtml(schedule, nowSec, activeEv){
+/** One row per phase: future → time to start; ended → 00:00:00; active → time left. `nextTaskStartSec` marks the row that is the immediate next task (darker timer). */
+function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
   const activeStart = activeEv ? activeEv.startSec : null;
   const parts = [];
   for (const ev of schedule){
-    if (nowSec >= ev.endSec) continue;
-    const isActive = activeStart !== null && ev.startSec === activeStart;
+    let cls;
     let deltaSec;
-    if (nowSec < ev.startSec) deltaSec = ev.startSec - nowSec;
-    else deltaSec = ev.endSec - nowSec;
-    const cls = isActive ? "task-timer-row is-active" : "task-timer-row";
+    if (nowSec >= ev.endSec){
+      cls = "task-timer-row is-ended";
+      deltaSec = 0;
+    } else if (nowSec < ev.startSec){
+      cls = "task-timer-row";
+      if (nextTaskStartSec !== null && ev.startSec === nextTaskStartSec){
+        cls += " is-next";
+      }
+      deltaSec = ev.startSec - nowSec;
+    } else {
+      const isActive = activeStart !== null && ev.startSec === activeStart;
+      cls = isActive ? "task-timer-row is-active" : "task-timer-row";
+      deltaSec = ev.endSec - nowSec;
+    }
     const tStart = formatHMwithFixedSec(ev.startSec);
     const name = escapeHtml(ev.name || "(no label)");
     const cd = formatCountdown(Math.max(0, deltaSec));
@@ -905,9 +898,6 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
         `<div class="task-timer-nums nums">${cd}</div>` +
         `</div>`
     );
-  }
-  if (!parts.length){
-    return "<div class=\"task-timers-empty\">No more tasks today</div>";
   }
   return parts.join("");
 }
@@ -932,13 +922,12 @@ function render(){
     raceCd.textContent = "SAILING WINDOW CLOSED";
     raceCd.classList.add("is-closed");
 
-    document.getElementById("upNextTasks").innerHTML = "";
     document.getElementById("upNextRaces").innerHTML = "";
 
     return;
   }
 
-  // NEXT TASK — same `taskChain` as Up next (tasks) (single source, like races)
+  // NEXT TASK — from next upcoming phase after now
   const taskChain = chainAfterNowSec(nowSec, null);
   const nextTaskInfo = taskChain.length
     ? { next: taskChain[0], deltaSec: Math.max(0, taskChain[0].startSec - nowSec) }
@@ -956,7 +945,8 @@ function render(){
   }
 
   const active = findActive(now);
-  document.getElementById("taskTimersList").innerHTML = buildTaskTimersHtml(schedule, nowSec, active);
+  const nextTaskStartSec = taskChain.length ? taskChain[0].startSec : null;
+  document.getElementById("taskTimersList").innerHTML = buildTaskTimersHtml(schedule, nowSec, active, nextTaskStartSec);
 
   // NEXT RACE — one entry per logical race (see dedupeRacePhasesByLogicalRace)
   const raceChain = raceChainAfterNowSec(nowSec);
@@ -977,20 +967,8 @@ function render(){
     raceCd.classList.remove("is-closed");
   }
 
-  // Up next — after immediate next; omit repeated labels (see upcomingTaskListEvs).
+  // Up next (races) — after immediate next race
   if (schedule.length){
-    const upcomingTaskEvs = upcomingTaskListEvs(taskChain);
-
-    let tasksHtml;
-    if (upcomingTaskEvs.length){
-      tasksHtml = `<div class="listBlock-inner">${upcomingTaskEvs.map(ev => upNextLineHtml(ev)).join("")}</div>`;
-    } else if (!taskChain.length){
-      tasksHtml = "<div class=\"upnext-msg\">No upcoming tasks</div>";
-    } else {
-      tasksHtml = "<div class=\"upnext-msg muted\">No more tasks</div>";
-    }
-    document.getElementById("upNextTasks").innerHTML = tasksHtml;
-
     const upcomingRaceEvs = raceChain.slice(1, 4);
 
     let racesHtml;
@@ -1003,7 +981,6 @@ function render(){
     }
     document.getElementById("upNextRaces").innerHTML = racesHtml;
   } else {
-    document.getElementById("upNextTasks").textContent = "";
     document.getElementById("upNextRaces").textContent = "";
   }
 }
