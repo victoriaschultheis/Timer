@@ -386,8 +386,8 @@ const COL_NAME = 2;
 const DATE_CELL_ROW = 21 - 1; // 20
 const DATE_VALUE_COLS = [2, 3, 1]; // C, D, B — try in that order
 
-// Re-fetch published CSV this often (clock still updates every 1s). Slower poll reduces flaky CDN flip‑flop.
-const SCHEDULE_REFRESH_MS = 3000;
+// Re-fetch published CSV this often (clock still updates every 1s). Paired with two-fetch confirm below.
+const SCHEDULE_REFRESH_MS = 10000;
 
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
@@ -397,8 +397,10 @@ let eventDateKey = null; // YYYY-MM-DD from C21
 let loadError = "";
 /** One fetch at a time — avoids overlapping requests returning in random order from Google’s cache. */
 let scheduleLoadPromise = null;
-/** Raw CSV body last applied to `schedule` (skip re-parse when unchanged). */
+/** Normalized CSV last applied to `schedule`. */
 let lastCommittedCsvText = "";
+/** After first fetch sees a *new* body, we wait for a second fetch with the same body before committing (stops CDN A/B flicker). */
+let csvAwaitingSecondMatch = null;
 
 function escapeHtml(s){
   return String(s)
@@ -622,8 +624,19 @@ async function loadSchedule(){
     const txt = await res.text();
     const normTxt = normalizeCsvBody(txt);
     if (normTxt === lastCommittedCsvText){
+      csvAwaitingSecondMatch = null;
       lastFetchMs = Date.now();
       return;
+    }
+
+    const needStablePair = lastCommittedCsvText.length > 0;
+    if (needStablePair){
+      if (normTxt !== csvAwaitingSecondMatch){
+        csvAwaitingSecondMatch = normTxt;
+        lastFetchMs = Date.now();
+        return;
+      }
+      csvAwaitingSecondMatch = null;
     }
 
     const rows = parseCSV(txt);
@@ -713,6 +726,40 @@ function isRace(ev){
   return (ev.name || "").trim().toLowerCase().startsWith("race");
 }
 
+/**
+ * One logical race can span multiple sheet boundaries (e.g. "Race 1 — line up" then "Race 1 (A1)").
+ * Keep the earliest phase per /^race\s*(\d+)/i so "Up next (races)" does not repeat the same race.
+ * Names without a race number dedupe by full label (case-insensitive).
+ */
+function dedupeRacePhasesByLogicalRace(phases){
+  const seenNums = new Set();
+  const seenLabels = new Set();
+  const out = [];
+  for (const ev of phases){
+    const raw = (ev.name || "").trim();
+    const numMatch = raw.match(/^race\s*(\d+)/i);
+    if (numMatch){
+      const n = numMatch[1];
+      if (seenNums.has(n)) continue;
+      seenNums.add(n);
+    } else {
+      const k = raw.toLowerCase();
+      if (!k){
+        out.push(ev);
+        continue;
+      }
+      if (seenLabels.has(k)) continue;
+      seenLabels.add(k);
+    }
+    out.push(ev);
+  }
+  return out;
+}
+
+function raceChainAfterNowSec(nowSec){
+  return dedupeRacePhasesByLogicalRace(chainAfterNowSec(nowSec, isRace));
+}
+
 /** One entry per start time (sheet sometimes has two rows at the same boundary). */
 function dedupeByStartSec(phases){
   const out = [];
@@ -723,17 +770,24 @@ function dedupeByStartSec(phases){
   return out;
 }
 
+/** Phases with start after `nowSec`, time-sorted and deduped — same basis for “next” hero and Up next lists. */
+function chainAfterNowSec(nowSec, predicate){
+  if (!schedule.length) return [];
+  const base = predicate ? schedule.filter(predicate) : schedule.slice();
+  return dedupeByStartSec(
+    base.filter(ev => ev.startSec > nowSec).sort((a, b) => a.startSec - b.startSec)
+  );
+}
+
 // Next phase start after `now` among matching rows (no wrap to tomorrow)
 function secondsUntilNextMatching(now, predicate){
   if (!schedule.length) return null;
 
-  const items = predicate ? schedule.filter(predicate) : schedule.slice();
-  if (!items.length) return null;
-
   const nowSec = nowSecondsOfDay(now);
-  const next = items.find(ev => ev.startSec > nowSec);
-  if (!next) return null;
+  const chain = chainAfterNowSec(nowSec, predicate);
+  if (!chain.length) return null;
 
+  const next = chain[0];
   const deltaSec = Math.max(0, next.startSec - nowSec);
   return { next, deltaSec };
 }
@@ -765,6 +819,7 @@ function findActive(now){
 
 function render(){
   const now = new Date();
+  const nowSec = nowSecondsOfDay(now);
   document.getElementById("now").textContent = formatHMS(now);
 
   document.getElementById("msg").textContent = loadError;
@@ -790,7 +845,7 @@ function render(){
     return;
   }
 
-  // NEXT TASK (any row)
+  // NEXT TASK (any row) — chain sorted same as Up next (tasks) below
   const nextTaskInfo = secondsUntilNextMatching(now, null);
 
   if (nextTaskInfo){
@@ -808,8 +863,11 @@ function render(){
     document.getElementById("taskCountdown").textContent = "--:--:--";
   }
 
-  // NEXT RACE (race rows only)
-  const nextRaceInfo = secondsUntilNextMatching(now, isRace);
+  // NEXT RACE — one entry per logical race (see dedupeRacePhasesByLogicalRace)
+  const raceChain = raceChainAfterNowSec(nowSec);
+  const nextRaceInfo = raceChain.length
+    ? { next: raceChain[0], deltaSec: Math.max(0, raceChain[0].startSec - nowSec) }
+    : null;
 
   if (nextRaceInfo){
     const { next, deltaSec } = nextRaceInfo;
@@ -824,7 +882,6 @@ function render(){
     raceCd.classList.remove("is-closed");
   }
 
-  const nowSec = nowSecondsOfDay(now);
   const active = findActive(now);
   if (active?.name){
     const ends = formatHMwithFixedSec(active.endSec);
@@ -833,14 +890,9 @@ function render(){
     document.getElementById("active").textContent = "";
   }
 
-  // Up next — starts *after* the immediate next item (same as countdown boxes above),
-  // so we don’t repeat that row here.
+  // Up next — rows after the immediate next (same chains as countdown boxes above).
   if (schedule.length){
-    const aheadTasks = dedupeByStartSec(
-      schedule
-        .filter(ev => ev.startSec > nowSec)
-        .sort((a, b) => a.startSec - b.startSec)
-    );
+    const aheadTasks = chainAfterNowSec(nowSec, null);
     const upcomingTaskEvs = aheadTasks.slice(1, 4);
 
     let tasksHtml;
@@ -853,18 +905,12 @@ function render(){
     }
     document.getElementById("upNextTasks").innerHTML = tasksHtml;
 
-    const aheadRaces = dedupeByStartSec(
-      schedule
-        .filter(isRace)
-        .filter(ev => ev.startSec > nowSec)
-        .sort((a, b) => a.startSec - b.startSec)
-    );
-    const upcomingRaceEvs = aheadRaces.slice(1, 4);
+    const upcomingRaceEvs = raceChain.slice(1, 4);
 
     let racesHtml;
     if (upcomingRaceEvs.length){
       racesHtml = `<div class="listBlock-inner">${upcomingRaceEvs.map(ev => upNextRaceLineHtml(ev)).join("")}</div>`;
-    } else if (!aheadRaces.length){
+    } else if (!raceChain.length){
       racesHtml = "<div class=\"upnext-msg\">No upcoming races</div>";
     } else {
       racesHtml = "<div class=\"upnext-msg muted\">No more races</div>";
