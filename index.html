@@ -426,11 +426,11 @@
 /**
  * CONFIG
  * Google Sheets published CSV URL.
- * - column A: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
- *   The last time is end-of-window (no separate block after it). Column B is ignored.
- * - column C: name/description for the block that starts at that row’s time
- * Schedule markers: only from sheet row 30 downward (rows above are ignored for T‑minus phases).
- * Event date: row 21 in column C or D, or any row whose column A is “Date” (value in B, C, or D).
+ * - column H: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
+ *   The last time is end-of-window (no separate block after it).
+ * - column I: name/description for the block that starts at that row’s time
+ * Schedule markers: only from sheet row 24 downward (rows above are ignored for T-minus phases).
+ * Event date: fixed cell H23.
  */
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=2132763229&single=true&output=csv";
 // Cache-busting per fetch (important: Date.now() must be evaluated each time)
@@ -438,24 +438,23 @@ function csvUrl(){
   return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
 }
 
-const COL_TIME = 0;
-const COL_NAME = 2;
+const COL_TIME = 7; // H
+const COL_NAME = 8; // I
 
-// Event date row (1-based row 21 → index 20). Value may be in C or D depending on layout.
-const DATE_CELL_ROW = 21 - 1; // 20
-const DATE_VALUE_COLS = [2, 3, 1]; // C, D, B — try in that order
+// Event date cell (H23).
+const DATE_CELL_ROW = 23 - 1; // 22
+const DATE_VALUE_COLS = [7]; // H
 
-// T‑minus times/names: only read from this row onward (1-based sheet row 30 → index 29).
-const SCHEDULE_FIRST_ROW_INDEX = 30 - 1;
+// Schedule times/names: only read from this row onward (1-based sheet row 24 → index 23).
+const SCHEDULE_FIRST_ROW_INDEX = 24 - 1;
 
 // Re-fetch published CSV this often (clock still updates every 1s). Paired with two-fetch confirm below.
 const SCHEDULE_REFRESH_MS = 10000;
-
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 let windowEndSec = null; // sailing day ends at this second-of-day (local)
 let lastFetchMs = 0;
-let eventDateKey = null; // YYYY-MM-DD from C21
+let eventDateKey = null; // YYYY-MM-DD from H23
 let loadError = "";
 /** One fetch at a time — avoids overlapping requests returning in random order from Google’s cache. */
 let scheduleLoadPromise = null;
@@ -463,7 +462,6 @@ let scheduleLoadPromise = null;
 let lastCommittedCsvText = "";
 /** After first fetch sees a *new* body, we wait for a second fetch with the same body before committing (stops CDN A/B flicker). */
 let csvAwaitingSecondMatch = null;
-
 function escapeHtml(s){
   return String(s)
     .replace(/&/g, "&amp;")
@@ -561,14 +559,6 @@ function parseEventDateFromRows(rows){
   if (r){
     for (const c of DATE_VALUE_COLS){
       const key = parseDateToKey(r[c]);
-      if (key) return key;
-    }
-  }
-  for (let i = 0; i < rows.length; i++){
-    const label = (rows[i][COL_TIME] ?? "").trim().toLowerCase();
-    if (label !== "date") continue;
-    for (const c of DATE_VALUE_COLS){
-      const key = parseDateToKey(rows[i][c]);
       if (key) return key;
     }
   }
@@ -700,7 +690,7 @@ async function loadSchedule(){
     let nextLoadError = "";
     if (!nextEventDateKey){
       nextLoadError =
-        "Could not parse event date (put it in C21 or D21, or a “Date” row with the value in B/C/D). Use YYYY-MM-DD or DD/MM/YYYY.";
+        "Could not parse event date from H23. Use YYYY-MM-DD or DD/MM/YYYY.";
     }
 
     const markers = [];
