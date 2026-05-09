@@ -723,12 +723,19 @@ async function loadSchedule(){
       nextWindowEndSec = merged.length === 1 ? merged[0].startMin * 60 : null;
     } else {
       const phases = [];
+      const lastMergedIdx = merged.length - 1;
       for (let i = 0; i < merged.length - 1; i++){
+        const isLastPhase = i === merged.length - 2;
+        // Last interval ends at the final row (e.g. “Sailing window closing”) but started at the previous boundary.
+        // Use the closing row’s title so we don’t label that whole span as “Race 4” while counting down to the window.
+        const phaseName = isLastPhase
+          ? (merged[lastMergedIdx].name || merged[i].name)
+          : merged[i].name;
         phases.push({
           startSec: merged[i].startMin * 60,
           endSec: merged[i + 1].startMin * 60,
           startMin: merged[i].startMin,
-          name: merged[i].name,
+          name: phaseName,
           timeStr: merged[i].timeStr,
         });
       }
