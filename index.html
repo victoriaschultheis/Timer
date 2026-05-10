@@ -449,8 +449,8 @@ const DATE_VALUE_COLS = [7]; // H
 // Schedule times/names: only read from this row onward (1-based sheet row 24 → index 23).
 const SCHEDULE_FIRST_ROW_INDEX = 24 - 1;
 
-// Re-fetch published CSV this often (clock still updates every 1s). Paired with two-fetch confirm below.
-const SCHEDULE_REFRESH_MS = 10000;
+// Re-fetch published CSV this often (clock still updates every 1s).
+const SCHEDULE_REFRESH_MS = 4000;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 let windowEndSec = null; // sailing day ends at this second-of-day (local)
@@ -461,8 +461,6 @@ let loadError = "";
 let scheduleLoadPromise = null;
 /** Normalized CSV last applied to `schedule`. */
 let lastCommittedCsvText = "";
-/** After first fetch sees a *new* body, we wait for a second fetch with the same body before committing (stops CDN A/B flicker). */
-let csvAwaitingSecondMatch = null;
 function escapeHtml(s){
   return String(s)
     .replace(/&/g, "&amp;")
@@ -670,19 +668,8 @@ async function loadSchedule(){
     const txt = await res.text();
     const normTxt = normalizeCsvBody(txt);
     if (normTxt === lastCommittedCsvText){
-      csvAwaitingSecondMatch = null;
       lastFetchMs = Date.now();
       return;
-    }
-
-    const needStablePair = lastCommittedCsvText.length > 0;
-    if (needStablePair){
-      if (normTxt !== csvAwaitingSecondMatch){
-        csvAwaitingSecondMatch = normTxt;
-        lastFetchMs = Date.now();
-        return;
-      }
-      csvAwaitingSecondMatch = null;
     }
 
     const rows = parseCSV(txt);
