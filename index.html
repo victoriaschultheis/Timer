@@ -190,37 +190,19 @@
       height: clamp(44px, min(8vw, 10vh), 120px);
       box-sizing: border-box;
     }
-    .race-countdown-panel > .label {
-      flex: 0 0 auto;
-    }
-    .race-countdown-title-wrap {
-      flex: 1 1 auto;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 100%;
-      min-height: 2.5em;
-      padding: clamp(0.2rem, 1vmin, 0.45rem) 0;
-    }
     .race-countdown-title {
+      flex: 0 0 auto;
       width: 100%;
       text-align: center;
-      margin: 0;
-      font-size: clamp(22px, min(4.2vw, 5.5vh), 48px);
-      font-weight: 800;
-      line-height: 1.12;
-      color: var(--race-digits);
-      letter-spacing: 0.02em;
-    }
-    .race-countdown-title:empty {
-      display: none;
+      margin: 0 0 0.2rem;
+      min-height: 0;
     }
     .race-countdown-body {
-      flex: 0 0 auto;
+      flex: 1;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: flex-end;
+      justify-content: center;
       width: 100%;
       min-height: 0;
     }
@@ -320,6 +302,9 @@
     .titleReserve {
       min-height: 2.35em;
       width: 100%;
+      text-align: center;
+    }
+    #raceCountdownTitle {
       text-align: center;
     }
     #nextTaskName {
@@ -459,11 +444,9 @@
             <div id="msg" class="small error"></div>
           </div>
 
-          <div class="box raceBox race-countdown-panel">
+          <div class="box raceBox">
             <div class="label">Countdown to next race</div>
-            <div class="race-countdown-title-wrap">
-              <div id="raceCountdownTitle" class="race-countdown-title"></div>
-            </div>
+            <div id="raceCountdownTitle" class="small muted race-countdown-title"></div>
             <div class="race-countdown-body">
               <div class="kpi">
                 <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
@@ -825,10 +808,7 @@ function formatCountdown(deltaSec){
 }
 
 function taskCountdownEndedHtml(){
-  return (
-    `<span class="task-timer-hm task-timer-ended" aria-label="Ended">\u2014</span>` +
-    `<span class="task-timer-ss task-timer-ss--blank" aria-hidden="true">:00</span>`
-  );
+  return taskCountdownHtml(0, false);
 }
 
 function taskCountdownHtml(deltaSec, showSeconds){
@@ -1200,7 +1180,7 @@ function findActive(now){
   return null;
 }
 
-function getTaskPhase(ev, ctx){
+function getTaskPhaseByTime(ev, ctx){
   const { nowSec, nowMs, dayKey } = ctx;
   if (dayKey){
     const startMs = zonedWallClockToMs(dayKey, ev.startMin, scheduleTz);
@@ -1212,6 +1192,13 @@ function getTaskPhase(ev, ctx){
   if (nowSec >= ev.endSec) return "ended";
   if (nowSec < ev.startSec) return "future";
   return "active";
+}
+
+/** Any task before the live focus row is done (fixes past rows mirroring the next countdown). */
+function getTaskPhase(ev, ctx){
+  const { focusStartSec } = ctx;
+  if (focusStartSec != null && ev.startSec < focusStartSec) return "ended";
+  return getTaskPhaseByTime(ev, ctx);
 }
 
 function hasImmediateNextPhase(schedule, ev){
@@ -1226,7 +1213,7 @@ function hasImmediateNextPhase(schedule, ev){
 /** First row whose right-hand timer is live (not ended “–” / pending “–”). */
 function resolveTaskListFocus(schedule, ctx){
   for (const ev of schedule){
-    const phase = getTaskPhase(ev, ctx);
+    const phase = getTaskPhaseByTime(ev, ctx);
     if (phase === "ended") continue;
     if (phase === "active" && hasImmediateNextPhase(schedule, ev)) continue;
     return { ev, phase };
