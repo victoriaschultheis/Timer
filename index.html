@@ -384,6 +384,12 @@
     .task-timer-ss--blank {
       visibility: hidden;
     }
+    .task-timer-ended {
+      color: var(--text-muted);
+      font-weight: 600;
+      min-width: 5.5ch;
+      text-align: center;
+    }
     /* Active row when the live countdown is shown on the next task row instead (see buildTaskTimersHtml). */
     .task-timer-nums--pending {
       min-width: 9ch;
@@ -523,7 +529,7 @@ let scheduleLoadPromise = null;
 let lastCommittedCsvText = "";
 /** Rebuild task list DOM only when row states change; keeps scroll position between ticks. */
 let lastTaskListStructureKey = "";
-let lastAutoScrollNextStartSec = null;
+let lastAutoScrollFocusStartSec = null;
 let taskListUserInteractedAt = 0;
 function escapeHtml(s){
   return String(s)
@@ -801,14 +807,14 @@ function formatCountdown(deltaSec){
   return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
 }
 
-function taskCountdownHtml(deltaSec, showSeconds, ended = false){
-  if (ended){
-    const hm = "00:00";
-    const ss = showSeconds
-      ? `<span class="task-timer-ss">:00</span>`
-      : `<span class="task-timer-ss task-timer-ss--blank" aria-hidden="true">:00</span>`;
-    return `<span class="task-timer-hm">${hm}</span>${ss}`;
-  }
+function taskCountdownEndedHtml(){
+  return (
+    `<span class="task-timer-hm task-timer-ended" aria-label="Ended">\u2014</span>` +
+    `<span class="task-timer-ss task-timer-ss--blank" aria-hidden="true">:00</span>`
+  );
+}
+
+function taskCountdownHtml(deltaSec, showSeconds){
   const total = Math.max(0, Math.floor(deltaSec));
   const hh = Math.floor(total / 3600);
   const mm = Math.floor((total % 3600) / 60);
@@ -1177,56 +1183,95 @@ function findActive(now){
   return null;
 }
 
+function getTaskPhase(ev, ctx){
+  const { nowSec, nowMs, dayKey } = ctx;
+  if (dayKey){
+    const startMs = zonedWallClockToMs(dayKey, ev.startMin, scheduleTz);
+    const endMs = zonedWallClockToMs(dayKey, Math.floor(ev.endSec / 60), scheduleTz);
+    if (nowMs >= endMs) return "ended";
+    if (nowMs < startMs) return "future";
+    return "active";
+  }
+  if (nowSec >= ev.endSec) return "ended";
+  if (nowSec < ev.startSec) return "future";
+  return "active";
+}
+
+function hasImmediateNextPhase(schedule, ev){
+  const idx = schedule.findIndex(e => e.startSec === ev.startSec);
+  return (
+    idx >= 0 &&
+    idx + 1 < schedule.length &&
+    schedule[idx + 1].startSec === schedule[idx].endSec
+  );
+}
+
+/** First row whose right-hand timer is live (not ended “–” / pending “–”). */
+function resolveTaskListFocus(schedule, ctx){
+  for (const ev of schedule){
+    const phase = getTaskPhase(ev, ctx);
+    if (phase === "ended") continue;
+    if (phase === "active" && hasImmediateNextPhase(schedule, ev)) continue;
+    return { ev, phase };
+  }
+  return null;
+}
+
+function countdownSecToTaskStart(ev, ctx){
+  if (ctx.dayKey){
+    const startMs = zonedWallClockToMs(ctx.dayKey, ev.startMin, scheduleTz);
+    return Math.max(0, Math.floor((startMs - ctx.nowMs) / 1000));
+  }
+  return Math.max(0, ev.startSec - ctx.nowSec);
+}
+
+function countdownSecToTaskEnd(ev, ctx){
+  if (ctx.dayKey){
+    const endMs = zonedWallClockToMs(ctx.dayKey, Math.floor(ev.endSec / 60), scheduleTz);
+    return Math.max(0, Math.floor((endMs - ctx.nowMs) / 1000));
+  }
+  return Math.max(0, ev.endSec - ctx.nowSec);
+}
+
 function computeTaskRowDisplay(ev, ctx){
-  const { nowSec, nowMs, dayKey, activeEv, nextTaskStartSec, schedule } = ctx;
-  const isNextTask = nextTaskStartSec != null && ev.startSec === nextTaskStartSec;
+  const { activeEv, schedule, focusStartSec } = ctx;
+  const phase = getTaskPhase(ev, ctx);
+  const isFocus = focusStartSec != null && ev.startSec === focusStartSec;
+  const showSeconds = isFocus;
   let cls = "task-timer-row";
   let cd = "";
   let numsExtraClass = "";
 
-  if (dayKey){
-    const startMs = zonedWallClockToMs(dayKey, ev.startMin, scheduleTz);
-    const endMs = zonedWallClockToMs(dayKey, Math.floor(ev.endSec / 60), scheduleTz);
-    if (nowMs >= endMs) cd = taskCountdownHtml(0, isNextTask, true);
-    else if (nowMs < startMs) cd = taskCountdownHtml(Math.floor((startMs - nowMs) / 1000), isNextTask);
-    else {
-      cls += " is-active";
-      cd = taskCountdownHtml(Math.floor((endMs - nowMs) / 1000), isNextTask);
-    }
-    return { cls, cd, numsExtraClass, isNextTask };
+  if (phase === "ended"){
+    cd = taskCountdownEndedHtml();
+    return { cls, cd, numsExtraClass, isFocus };
+  }
+
+  if (phase === "future"){
+    cd = taskCountdownHtml(countdownSecToTaskStart(ev, ctx), showSeconds);
+    return { cls, cd, numsExtraClass, isFocus };
   }
 
   const activeStart = activeEv ? activeEv.startSec : null;
-  const activeIdx = activeEv
-    ? schedule.findIndex(e => e.startSec === activeEv.startSec)
-    : -1;
-  const hasImmediateNext =
-    activeIdx >= 0 &&
-    activeIdx + 1 < schedule.length &&
-    schedule[activeIdx + 1].startSec === schedule[activeIdx].endSec;
+  const isActive = activeStart !== null && ev.startSec === activeStart;
+  if (isActive) cls += " is-active";
 
-  if (nowSec >= ev.endSec) cd = taskCountdownHtml(0, isNextTask, true);
-  else if (nowSec < ev.startSec) cd = taskCountdownHtml(ev.startSec - nowSec, isNextTask);
-  else {
-    const isActive = activeStart !== null && ev.startSec === activeStart;
-    if (isActive) cls += " is-active";
-    if (isActive && hasImmediateNext){
-      cd = "";
-      numsExtraClass = " task-timer-nums--pending";
-    } else {
-      cd = taskCountdownHtml(ev.endSec - nowSec, isNextTask);
-    }
+  if (isActive && hasImmediateNextPhase(schedule, ev)){
+    cd = "";
+    numsExtraClass = " task-timer-nums--pending";
+  } else {
+    cd = taskCountdownHtml(countdownSecToTaskEnd(ev, ctx), showSeconds);
   }
-  return { cls, cd, numsExtraClass, isNextTask };
+  return { cls, cd, numsExtraClass, isFocus };
 }
 
 function taskTimerRowHtml(ev, display){
-  const { cls, cd, numsExtraClass, isNextTask } = display;
-  const nextMark = isNextTask ? " task-timer-row--next" : "";
+  const { cls, cd, numsExtraClass, isFocus } = display;
+  const focusMark = isFocus ? " task-timer-row--focus" : "";
   const tStart = formatHMfromSeconds(ev.startSec);
   const name = escapeHtml(ev.name || "(no label)");
   return (
-    `<div class="${cls}${nextMark}" data-start-sec="${ev.startSec}">` +
+    `<div class="${cls}${focusMark}" data-start-sec="${ev.startSec}">` +
       `<div class="task-timer-meta">` +
       `<span class="task-timer-start nums">${tStart}</span>` +
       `<span class="task-timer-name">${name}</span>` +
@@ -1236,21 +1281,16 @@ function taskTimerRowHtml(ev, display){
   );
 }
 
-function taskListStructureKey(schedule, nowSec, nowMs, activeEv, nextTaskStartSec, dayKey){
+function taskListStructureKey(schedule, ctx, activeEv, focusStartSec){
   const states = schedule.map(ev => {
-    if (dayKey){
-      const startMs = zonedWallClockToMs(dayKey, ev.startMin, scheduleTz);
-      const endMs = zonedWallClockToMs(dayKey, Math.floor(ev.endSec / 60), scheduleTz);
-      if (nowMs >= endMs) return "e";
-      if (nowMs < startMs) return "f";
-      return "a";
-    }
-    if (nowSec >= ev.endSec) return "e";
-    if (nowSec < ev.startSec) return "f";
-    return "a";
+    const phase = getTaskPhase(ev, ctx);
+    if (phase === "ended") return "e";
+    if (phase === "future") return "f";
+    return hasImmediateNextPhase(schedule, ev) ? "p" : "a";
   }).join("");
   const activeStart = activeEv ? activeEv.startSec : "n";
-  return `${dayKey || "day"}|${schedule.length}|${nextTaskStartSec ?? "n"}|${activeStart}|${states}`;
+  const dayKey = ctx.dayKey || "day";
+  return `${dayKey}|${schedule.length}|${focusStartSec ?? "n"}|${activeStart}|${states}`;
 }
 
 function bindTaskTimersScroll(){
@@ -1263,34 +1303,47 @@ function bindTaskTimersScroll(){
   el.addEventListener("touchstart", mark, { passive: true });
 }
 
-function scrollTaskListToNextTask(nextTaskStartSec, opts = {}){
+function scrollTaskListToFocus(focusStartSec, opts = {}){
   const scrollEl = document.getElementById("taskTimersList");
-  if (!scrollEl || nextTaskStartSec == null) return;
+  if (!scrollEl || focusStartSec == null) return;
 
-  const nextAdvanced = lastAutoScrollNextStartSec !== nextTaskStartSec;
+  const focusAdvanced = lastAutoScrollFocusStartSec !== focusStartSec;
   const userRecentlyScrolled = (Date.now() - taskListUserInteractedAt) < 15000;
-  if (!opts.force && !nextAdvanced && userRecentlyScrolled) return;
+  if (!opts.force && !focusAdvanced && userRecentlyScrolled) return;
 
-  const row = scrollEl.querySelector(".task-timer-row--next");
+  const row = scrollEl.querySelector(".task-timer-row--focus");
   if (!row) return;
 
-  lastAutoScrollNextStartSec = nextTaskStartSec;
+  lastAutoScrollFocusStartSec = focusStartSec;
   scrollEl.scrollTo({
     top: Math.max(0, row.offsetTop),
     behavior: opts.animate ? "smooth" : "auto",
   });
 }
 
-function updateTaskListCountdownsInPlace(schedule, now, nowSec, activeEv, nextTaskStartSec, dayKey){
+function buildTaskListContext(schedule, venueCtx, activeEv, previewDayKey){
+  const dayKey = previewDayKey ?? null;
+  const listCtx = {
+    now: venueCtx.now,
+    nowSec: venueCtx.nowSec,
+    nowMs: venueCtx.nowMs,
+    dayKey,
+    activeEv,
+    schedule,
+  };
+  const focus = resolveTaskListFocus(schedule, listCtx);
+  listCtx.focusStartSec = focus ? focus.ev.startSec : null;
+  return listCtx;
+}
+
+function updateTaskListCountdownsInPlace(schedule, listCtx){
   const scrollEl = document.getElementById("taskTimersList");
   if (!scrollEl) return;
-  const nowMs = now.getTime();
-  const ctx = { nowSec, nowMs, dayKey, activeEv, nextTaskStartSec, schedule };
   for (const ev of schedule){
     const row = scrollEl.querySelector(`[data-start-sec="${ev.startSec}"]`);
     if (!row) continue;
-    const display = computeTaskRowDisplay(ev, ctx);
-    row.className = display.cls + (display.isNextTask ? " task-timer-row--next" : "");
+    const display = computeTaskRowDisplay(ev, listCtx);
+    row.className = display.cls + (display.isFocus ? " task-timer-row--focus" : "");
     const nums = row.querySelector(".task-timer-nums");
     if (!nums) continue;
     nums.className = `task-timer-nums nums${display.numsExtraClass}`;
@@ -1298,57 +1351,37 @@ function updateTaskListCountdownsInPlace(schedule, now, nowSec, activeEv, nextTa
   }
 }
 
-function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec = null){
+function buildTaskTimersHtml(schedule, listCtx){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
-  const ctx = { nowSec, nowMs: null, dayKey: null, activeEv, nextTaskStartSec, schedule };
-  return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, ctx))).join("");
+  return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, listCtx))).join("");
 }
 
-/** Friday preview: countdowns to each task on venue “today” (Friday in N23) — not the first-race calendar day. */
-function buildTaskTimersHtmlRaceDay(schedule, venueCtx, dayKey, nextTaskStartSec = null){
-  if (!schedule.length || !dayKey){
-    return "<div class=\"task-timers-empty\">No tasks loaded</div>";
-  }
-  const rowCtx = {
-    nowSec: null,
-    nowMs: venueCtx.nowMs,
-    dayKey,
-    activeEv: null,
-    nextTaskStartSec,
-    schedule,
-  };
-  return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, rowCtx))).join("");
-}
-
-function refreshTaskTimersList(schedule, ctx, activeEv, nextTaskStartSec, previewDayKey){
+function refreshTaskTimersList(schedule, ctx, activeEv, _nextTaskStartSec, previewDayKey){
   const scrollEl = document.getElementById("taskTimersList");
   if (!scrollEl) return;
 
   bindTaskTimersScroll();
 
-  const { now, nowSec, nowMs } = ctx;
-  const dayKey = previewDayKey ?? null;
-  const key = taskListStructureKey(schedule, nowSec, nowMs, activeEv, nextTaskStartSec, dayKey);
+  const listCtx = buildTaskListContext(schedule, ctx, activeEv, previewDayKey);
+  const key = taskListStructureKey(schedule, listCtx, activeEv, listCtx.focusStartSec);
   const rebuild = key !== lastTaskListStructureKey;
 
   if (rebuild){
     lastTaskListStructureKey = key;
-    scrollEl.innerHTML = dayKey
-      ? buildTaskTimersHtmlRaceDay(schedule, ctx, dayKey, nextTaskStartSec)
-      : buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec);
+    scrollEl.innerHTML = buildTaskTimersHtml(schedule, listCtx);
     requestAnimationFrame(() => {
-      scrollTaskListToNextTask(nextTaskStartSec, { force: true, animate: false });
+      scrollTaskListToFocus(listCtx.focusStartSec, { force: true, animate: false });
     });
     return;
   }
 
-  updateTaskListCountdownsInPlace(schedule, now, nowSec, activeEv, nextTaskStartSec, dayKey);
+  updateTaskListCountdownsInPlace(schedule, listCtx);
 
-  if (nextTaskStartSec != null && lastAutoScrollNextStartSec !== nextTaskStartSec){
+  if (listCtx.focusStartSec != null && lastAutoScrollFocusStartSec !== listCtx.focusStartSec){
     requestAnimationFrame(() => {
-      scrollTaskListToNextTask(nextTaskStartSec, { force: true, animate: true });
+      scrollTaskListToFocus(listCtx.focusStartSec, { force: true, animate: true });
     });
   }
 }
@@ -1426,7 +1459,7 @@ function render(){
 
     document.getElementById("taskTimersList").innerHTML = "";
     lastTaskListStructureKey = "";
-    lastAutoScrollNextStartSec = null;
+    lastAutoScrollFocusStartSec = null;
 
     document.getElementById("raceCountdownTitle").textContent = "";
     const raceCd = document.getElementById("raceCountdown");
