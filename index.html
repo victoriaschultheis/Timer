@@ -452,7 +452,7 @@
  * Schedule markers: only from sheet row 24 downward (rows above are ignored for T-minus phases).
  * Event date: sheet row 23, column H (value next to “Date” in G23 for this tab).
  * Venue timezone: N23 (e.g. America/New_York). First race: M24 (date), N24 (time).
- * On Friday (venue TZ) before first race: big “until first race” countdown; task list uses race-day times.
+ * On Friday (venue TZ) before first race: “First Race” countdown to M24/N24; task list uses Friday times.
  * Sat/Sun: normal same-day schedule logic.
  * Published CSV: gid=571089878. Schedule times in H/I from row 24 downward.
  */
@@ -745,6 +745,18 @@ function formatCountdown(deltaSec){
   const mm = Math.floor((deltaSec % 3600) / 60);
   const ss = deltaSec % 60;
   return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+}
+
+/** Task list countdown without seconds (all rows except the next upcoming task). */
+function formatCountdownHm(deltaSec){
+  const total = Math.max(0, Math.floor(deltaSec));
+  const hh = Math.floor(total / 3600);
+  const mm = Math.floor((total % 3600) / 60);
+  return `${pad2(hh)}:${pad2(mm)}`;
+}
+
+function formatTaskListCountdown(deltaSec, isNextTask){
+  return isNextTask ? formatCountdown(deltaSec) : formatCountdownHm(deltaSec);
 }
 
 /** Multi-day countdown for Friday → first race (e.g. 1d2h20m). */
@@ -1115,7 +1127,7 @@ function findActive(now){
  * While current task runs and a next row exists at the same boundary, the active row shows a dash; the next row ticks.
  * Last task of the day (no following row): active row shows time left. Ended: 00:00:00. Other futures: time until start.
  */
-function buildTaskTimersHtml(schedule, nowSec, activeEv){
+function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec = null){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
@@ -1135,13 +1147,14 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
     let cls;
     let cd;
     let numsExtraClass = "";
+    const isNextTask = nextTaskStartSec != null && ev.startSec === nextTaskStartSec;
     if (ended){
       cls = "task-timer-row";
-      cd = "00:00:00";
+      cd = isNextTask ? "00:00:00" : "00:00";
     } else if (future){
       cls = "task-timer-row";
       const deltaSec = ev.startSec - nowSec;
-      cd = formatCountdown(Math.max(0, deltaSec));
+      cd = formatTaskListCountdown(deltaSec, isNextTask);
     } else {
       const isActive = activeStart !== null && ev.startSec === activeStart;
       cls = isActive ? "task-timer-row is-active" : "task-timer-row";
@@ -1150,10 +1163,10 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
         cd = "";
         numsExtraClass = " task-timer-nums--pending";
       } else {
-        cd = formatCountdown(Math.max(0, deltaSec));
+        cd = formatTaskListCountdown(deltaSec, isNextTask);
       }
     }
-    const tStart = formatHMwithFixedSec(ev.startSec);
+    const tStart = formatHMfromSeconds(ev.startSec);
     const name = escapeHtml(ev.name || "(no label)");
     parts.push(
       `<div class="${cls}">` +
@@ -1168,27 +1181,28 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
   return parts.join("");
 }
 
-/** Friday preview: countdowns to each task on the first-race calendar day (M24). */
-function buildTaskTimersHtmlRaceDay(schedule, now, raceDayKey){
-  if (!schedule.length || !raceDayKey){
+/** Friday preview: countdowns to each task on today (Friday) in venue TZ — not the first-race day. */
+function buildTaskTimersHtmlRaceDay(schedule, now, dayKey, nextTaskStartSec = null){
+  if (!schedule.length || !dayKey){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
   const nowMs = now.getTime();
   const parts = [];
   for (const ev of schedule){
-    const startMs = zonedWallClockToMs(raceDayKey, ev.startMin, scheduleTz);
-    const endMs = zonedWallClockToMs(raceDayKey, Math.floor(ev.endSec / 60), scheduleTz);
+    const startMs = zonedWallClockToMs(dayKey, ev.startMin, scheduleTz);
+    const endMs = zonedWallClockToMs(dayKey, Math.floor(ev.endSec / 60), scheduleTz);
     const ended = nowMs >= endMs;
     const future = nowMs < startMs;
+    const isNextTask = nextTaskStartSec != null && ev.startSec === nextTaskStartSec;
     let cls = "task-timer-row";
     let cd;
     if (ended){
-      cd = "00:00:00";
+      cd = isNextTask ? "00:00:00" : "00:00";
     } else if (future){
-      cd = formatCountdown(Math.max(0, Math.floor((startMs - nowMs) / 1000)));
+      cd = formatTaskListCountdown(Math.floor((startMs - nowMs) / 1000), isNextTask);
     } else {
       cls = "task-timer-row is-active";
-      cd = formatCountdown(Math.max(0, Math.floor((endMs - nowMs) / 1000)));
+      cd = formatTaskListCountdown(Math.floor((endMs - nowMs) / 1000), isNextTask);
     }
     const tStart = formatHMfromSeconds(ev.startSec);
     const name = escapeHtml(ev.name || "(no label)");
@@ -1205,10 +1219,19 @@ function buildTaskTimersHtmlRaceDay(schedule, now, raceDayKey){
   return parts.join("");
 }
 
+function nextTaskStartSecOnDay(schedule, now, dayKey){
+  const nowMs = now.getTime();
+  for (const ev of schedule){
+    if (nowMs < zonedWallClockToMs(dayKey, ev.startMin, scheduleTz)) return ev.startSec;
+  }
+  return null;
+}
+
 function renderFridayPreFirstRace(now){
   const nowMs = now.getTime();
   const deltaSec = Math.max(0, Math.floor((firstRaceInstantMs - nowMs) / 1000));
-  const raceDayKey = firstRaceDateKey || eventDateKey;
+  const fridayKey = dateKeyLocal(now);
+  const nextTaskStartSec = nextTaskStartSecOnDay(schedule, now, fridayKey);
 
   if (firstRaceMinOfDay != null){
     document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(firstRaceMinOfDay * 60);
@@ -1221,7 +1244,7 @@ function renderFridayPreFirstRace(now){
   }
 
   document.getElementById("taskTimersList").innerHTML =
-    buildTaskTimersHtmlRaceDay(schedule, now, raceDayKey);
+    buildTaskTimersHtmlRaceDay(schedule, now, fridayKey, nextTaskStartSec);
 
   document.getElementById("raceCountdownTitle").textContent = "First Race";
   const raceCd = document.getElementById("raceCountdown");
@@ -1291,7 +1314,9 @@ function render(){
   }
 
   const active = findActive(now);
-  document.getElementById("taskTimersList").innerHTML = buildTaskTimersHtml(schedule, nowSec, active);
+  const nextTaskStartSec = taskChain.length ? taskChain[0].startSec : null;
+  document.getElementById("taskTimersList").innerHTML =
+    buildTaskTimersHtml(schedule, nowSec, active, nextTaskStartSec);
 
   // NEXT RACE — one entry per logical race (see dedupeRacePhasesByLogicalRace)
   const raceChain = raceChainAfterNowSec(nowSec);
