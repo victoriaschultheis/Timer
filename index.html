@@ -190,6 +190,13 @@
       height: clamp(44px, min(8vw, 10vh), 120px);
       box-sizing: border-box;
     }
+    .race-countdown-title {
+      flex: 0 0 auto;
+      width: 100%;
+      text-align: center;
+      margin: 0 0 0.2rem;
+      min-height: 0;
+    }
     .race-countdown-body {
       flex: 1;
       display: flex;
@@ -198,15 +205,10 @@
       justify-content: center;
       width: 100%;
       min-height: 0;
-      gap: clamp(0.25rem, 1vmin, 0.5rem);
     }
     .race-countdown-body .kpi {
       flex: 0 0 auto;
-    }
-    .race-countdown-body #raceCountdownTitle {
-      flex: 0 0 auto;
-      min-height: 0;
-      margin: 0;
+      width: 100%;
     }
     #raceCountdown.is-closed {
       font-size: clamp(15px, 2.65vw, 26px);
@@ -359,12 +361,28 @@
       word-break: break-word;
     }
     .task-timer-nums {
+      display: flex;
+      justify-content: flex-end;
+      align-items: baseline;
       font-weight: 800;
       font-size: clamp(20px, min(4.2vw, 5vh), 40px);
       line-height: 1;
       color: var(--digits);
       flex-shrink: 0;
       align-self: center;
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum" 1;
+    }
+    .task-timer-hm {
+      text-align: right;
+      min-width: 5.5ch;
+    }
+    .task-timer-ss {
+      min-width: 3ch;
+      text-align: left;
+    }
+    .task-timer-ss--blank {
+      visibility: hidden;
     }
     /* Active row when the live countdown is shown on the next task row instead (see buildTaskTimersHtml). */
     .task-timer-nums--pending {
@@ -422,8 +440,8 @@
 
           <div class="box raceBox">
             <div class="label">Countdown to next race</div>
+            <div id="raceCountdownTitle" class="small muted race-countdown-title"></div>
             <div class="race-countdown-body">
-              <div id="raceCountdownTitle" class="small muted titleReserve"></div>
               <div class="kpi">
                 <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
               </div>
@@ -747,16 +765,23 @@ function formatCountdown(deltaSec){
   return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
 }
 
-/** Task list countdown without seconds (all rows except the next upcoming task). */
-function formatCountdownHm(deltaSec){
+function taskCountdownHtml(deltaSec, showSeconds, ended = false){
+  if (ended){
+    const hm = "00:00";
+    const ss = showSeconds
+      ? `<span class="task-timer-ss">:00</span>`
+      : `<span class="task-timer-ss task-timer-ss--blank" aria-hidden="true">:00</span>`;
+    return `<span class="task-timer-hm">${hm}</span>${ss}`;
+  }
   const total = Math.max(0, Math.floor(deltaSec));
   const hh = Math.floor(total / 3600);
   const mm = Math.floor((total % 3600) / 60);
-  return `${pad2(hh)}:${pad2(mm)}`;
-}
-
-function formatTaskListCountdown(deltaSec, isNextTask){
-  return isNextTask ? formatCountdown(deltaSec) : formatCountdownHm(deltaSec);
+  const ss = total % 60;
+  const hm = `${pad2(hh)}:${pad2(mm)}`;
+  if (showSeconds){
+    return `<span class="task-timer-hm">${hm}</span><span class="task-timer-ss">:${pad2(ss)}</span>`;
+  }
+  return `<span class="task-timer-hm">${hm}</span><span class="task-timer-ss task-timer-ss--blank" aria-hidden="true">:00</span>`;
 }
 
 /** Multi-day countdown for Friday → first race (e.g. 1d2h20m). */
@@ -1150,11 +1175,11 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec = null
     const isNextTask = nextTaskStartSec != null && ev.startSec === nextTaskStartSec;
     if (ended){
       cls = "task-timer-row";
-      cd = isNextTask ? "00:00:00" : "00:00";
+      cd = taskCountdownHtml(0, isNextTask, true);
     } else if (future){
       cls = "task-timer-row";
       const deltaSec = ev.startSec - nowSec;
-      cd = formatTaskListCountdown(deltaSec, isNextTask);
+      cd = taskCountdownHtml(deltaSec, isNextTask);
     } else {
       const isActive = activeStart !== null && ev.startSec === activeStart;
       cls = isActive ? "task-timer-row is-active" : "task-timer-row";
@@ -1163,7 +1188,7 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec = null
         cd = "";
         numsExtraClass = " task-timer-nums--pending";
       } else {
-        cd = formatTaskListCountdown(deltaSec, isNextTask);
+        cd = taskCountdownHtml(deltaSec, isNextTask);
       }
     }
     const tStart = formatHMfromSeconds(ev.startSec);
@@ -1197,12 +1222,12 @@ function buildTaskTimersHtmlRaceDay(schedule, now, dayKey, nextTaskStartSec = nu
     let cls = "task-timer-row";
     let cd;
     if (ended){
-      cd = isNextTask ? "00:00:00" : "00:00";
+      cd = taskCountdownHtml(0, isNextTask, true);
     } else if (future){
-      cd = formatTaskListCountdown(Math.floor((startMs - nowMs) / 1000), isNextTask);
+      cd = taskCountdownHtml(Math.floor((startMs - nowMs) / 1000), isNextTask);
     } else {
       cls = "task-timer-row is-active";
-      cd = formatTaskListCountdown(Math.floor((endMs - nowMs) / 1000), isNextTask);
+      cd = taskCountdownHtml(Math.floor((endMs - nowMs) / 1000), isNextTask);
     }
     const tStart = formatHMfromSeconds(ev.startSec);
     const name = escapeHtml(ev.name || "(no label)");
