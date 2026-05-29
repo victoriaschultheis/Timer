@@ -190,6 +190,24 @@
       height: clamp(44px, min(8vw, 10vh), 120px);
       box-sizing: border-box;
     }
+    .race-countdown-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 0;
+      gap: clamp(0.25rem, 1vmin, 0.5rem);
+    }
+    .race-countdown-body .kpi {
+      flex: 0 0 auto;
+    }
+    .race-countdown-body #raceCountdownTitle {
+      flex: 0 0 auto;
+      min-height: 0;
+      margin: 0;
+    }
     #raceCountdown.is-closed {
       font-size: clamp(15px, 2.65vw, 26px);
       font-weight: 700;
@@ -404,9 +422,11 @@
 
           <div class="box raceBox">
             <div class="label">Countdown to next race</div>
-            <div id="raceCountdownTitle" class="small muted titleReserve" style="margin-bottom:.35rem;"></div>
-            <div class="kpi">
-              <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
+            <div class="race-countdown-body">
+              <div id="raceCountdownTitle" class="small muted titleReserve"></div>
+              <div class="kpi">
+                <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1203,7 +1223,7 @@ function renderFridayPreFirstRace(now){
   document.getElementById("taskTimersList").innerHTML =
     buildTaskTimersHtmlRaceDay(schedule, now, raceDayKey);
 
-  document.getElementById("raceCountdownTitle").textContent = "Until first race";
+  document.getElementById("raceCountdownTitle").textContent = "First Race";
   const raceCd = document.getElementById("raceCountdown");
   raceCd.textContent = formatCountdownToFirstRace(deltaSec);
   raceCd.classList.remove("is-closed");
