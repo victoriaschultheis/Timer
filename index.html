@@ -190,19 +190,37 @@
       height: clamp(44px, min(8vw, 10vh), 120px);
       box-sizing: border-box;
     }
-    .race-countdown-title {
+    .race-countdown-panel > .label {
       flex: 0 0 auto;
+    }
+    .race-countdown-title-wrap {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 2.5em;
+      padding: clamp(0.2rem, 1vmin, 0.45rem) 0;
+    }
+    .race-countdown-title {
       width: 100%;
       text-align: center;
-      margin: 0 0 0.2rem;
-      min-height: 0;
+      margin: 0;
+      font-size: clamp(22px, min(4.2vw, 5.5vh), 48px);
+      font-weight: 800;
+      line-height: 1.12;
+      color: var(--race-digits);
+      letter-spacing: 0.02em;
+    }
+    .race-countdown-title:empty {
+      display: none;
     }
     .race-countdown-body {
-      flex: 1;
+      flex: 0 0 auto;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-end;
       width: 100%;
       min-height: 0;
     }
@@ -302,9 +320,6 @@
     .titleReserve {
       min-height: 2.35em;
       width: 100%;
-      text-align: center;
-    }
-    #raceCountdownTitle {
       text-align: center;
     }
     #nextTaskName {
@@ -444,9 +459,11 @@
             <div id="msg" class="small error"></div>
           </div>
 
-          <div class="box raceBox">
+          <div class="box raceBox race-countdown-panel">
             <div class="label">Countdown to next race</div>
-            <div id="raceCountdownTitle" class="small muted race-countdown-title"></div>
+            <div class="race-countdown-title-wrap">
+              <div id="raceCountdownTitle" class="race-countdown-title"></div>
+            </div>
             <div class="race-countdown-body">
               <div class="kpi">
                 <div class="slot-big"><div id="raceCountdown" class="big nums bigW">00:00:00</div></div>
