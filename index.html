@@ -431,9 +431,9 @@
  * - column I: name/description for the block that starts at that row’s time
  * Schedule markers: only from sheet row 24 downward (rows above are ignored for T-minus phases).
  * Event date: sheet row 23, column H (value next to “Date” in G23 for this tab).
- * Published CSV: gid=1051818379. Top rows may also list times in A/C; the timer uses the H/I block from row 24.
+ * Published CSV: gid=571089878. Top rows may also list times in A/C; the timer uses the H/I block from row 24.
  */
-const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=296793527&single=true&output=csv";
+const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=571089878&single=true&output=csv";
 // Cache-busting per fetch (important: Date.now() must be evaluated each time)
 function csvUrl(){
   return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
