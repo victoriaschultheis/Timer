@@ -696,19 +696,61 @@ function parseFirstRaceFromRows(rows, tz = scheduleTz){
   return { ms, dateKey, minOfDay };
 }
 
-function isFridayInScheduleTz(d = new Date()){
-  const wd = new Intl.DateTimeFormat("en-US", {
+/** Wall-clock parts for an instant in the venue timezone (N23 / scheduleTz). */
+function getScheduleTzPartsFull(d = new Date(), tz = scheduleTz){
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(d);
+  const num = t => Number(parts.find(p => p.type === t)?.value ?? 0);
+  let hour = num("hour");
+  if (hour === 24) hour = 0;
+  return {
+    year: num("year"),
+    month: num("month"),
+    day: num("day"),
+    hour,
+    minute: num("minute"),
+    second: num("second"),
+  };
+}
+
+/** “Now” for all schedule logic — always venue TZ, never the browser’s local zone. */
+function scheduleNowContext(d = new Date()){
+  const p = getScheduleTzPartsFull(d);
+  const nowSec = p.hour * 3600 + p.minute * 60 + p.second;
+  const dateKey = dateKeyFromTzParts(p);
+  const weekdayShort = new Intl.DateTimeFormat("en-US", {
     timeZone: scheduleTz,
     weekday: "short",
   }).format(d);
-  return wd === "Fri";
+  return {
+    now: d,
+    nowMs: d.getTime(),
+    nowSec,
+    dateKey,
+    weekdayShort,
+    isFriday: weekdayShort === "Fri",
+  };
+}
+
+function isFridayInScheduleTz(d = new Date()){
+  return scheduleNowContext(d).isFriday;
 }
 
 /** Friday (venue TZ) before first race — preview schedule + countdown to M24/N24. */
 function isFridayPreFirstRaceMode(now = new Date()){
   if (firstRaceInstantMs == null) return false;
-  if (!isFridayInScheduleTz(now)) return false;
-  return now.getTime() < firstRaceInstantMs;
+  const ctx = scheduleNowContext(now);
+  if (!ctx.isFriday) return false;
+  return ctx.nowMs < firstRaceInstantMs;
 }
 
 function scheduleTzShortLabel(tz = scheduleTz){
@@ -725,18 +767,8 @@ function scheduleTzShortLabel(tz = scheduleTz){
 }
 
 function getScheduleTzParts(d = new Date()){
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: scheduleTz,
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-  const parts = fmt.formatToParts(d);
-  const num = t => Number(parts.find(p => p.type === t)?.value ?? 0);
-  let hour = num("hour");
-  if (hour === 24) hour = 0;
-  return { hour, minute: num("minute"), second: num("second") };
+  const p = getScheduleTzPartsFull(d);
+  return { hour: p.hour, minute: p.minute, second: p.second };
 }
 
 function formatHMS(d){
@@ -801,13 +833,7 @@ function formatCountdownToFirstRace(deltaSec){
 }
 
 function dateKeyLocal(d){
-  // Event “today” in schedule TZ (YYYY-MM-DD)
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: scheduleTz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
+  return dateKeyFromTzParts(getScheduleTzPartsFull(d));
 }
 
 /** Google/Excel serial whole days since 1899-12-30 (UTC). */
@@ -1280,35 +1306,37 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec = null
   return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, ctx))).join("");
 }
 
-/** Friday preview: countdowns to each task on today (Friday) in venue TZ — not the first-race day. */
-function buildTaskTimersHtmlRaceDay(schedule, now, dayKey, nextTaskStartSec = null){
+/** Friday preview: countdowns to each task on venue “today” (Friday in N23) — not the first-race calendar day. */
+function buildTaskTimersHtmlRaceDay(schedule, venueCtx, dayKey, nextTaskStartSec = null){
   if (!schedule.length || !dayKey){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
-  const ctx = {
+  const rowCtx = {
     nowSec: null,
-    nowMs: now.getTime(),
+    nowMs: venueCtx.nowMs,
     dayKey,
     activeEv: null,
     nextTaskStartSec,
     schedule,
   };
-  return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, ctx))).join("");
+  return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, rowCtx))).join("");
 }
 
-function refreshTaskTimersList(schedule, now, nowSec, activeEv, nextTaskStartSec, dayKey){
+function refreshTaskTimersList(schedule, ctx, activeEv, nextTaskStartSec, previewDayKey){
   const scrollEl = document.getElementById("taskTimersList");
   if (!scrollEl) return;
 
   bindTaskTimersScroll();
 
-  const key = taskListStructureKey(schedule, nowSec, now.getTime(), activeEv, nextTaskStartSec, dayKey);
+  const { now, nowSec, nowMs } = ctx;
+  const dayKey = previewDayKey ?? null;
+  const key = taskListStructureKey(schedule, nowSec, nowMs, activeEv, nextTaskStartSec, dayKey);
   const rebuild = key !== lastTaskListStructureKey;
 
   if (rebuild){
     lastTaskListStructureKey = key;
     scrollEl.innerHTML = dayKey
-      ? buildTaskTimersHtmlRaceDay(schedule, now, dayKey, nextTaskStartSec)
+      ? buildTaskTimersHtmlRaceDay(schedule, ctx, dayKey, nextTaskStartSec)
       : buildTaskTimersHtml(schedule, nowSec, activeEv, nextTaskStartSec);
     requestAnimationFrame(() => {
       scrollTaskListToNextTask(nextTaskStartSec, { force: true, animate: false });
@@ -1325,19 +1353,17 @@ function refreshTaskTimersList(schedule, now, nowSec, activeEv, nextTaskStartSec
   }
 }
 
-function nextTaskStartSecOnDay(schedule, now, dayKey){
-  const nowMs = now.getTime();
+function nextTaskStartSecOnDay(schedule, ctx, dayKey){
   for (const ev of schedule){
-    if (nowMs < zonedWallClockToMs(dayKey, ev.startMin, scheduleTz)) return ev.startSec;
+    if (ctx.nowMs < zonedWallClockToMs(dayKey, ev.startMin, scheduleTz)) return ev.startSec;
   }
   return null;
 }
 
-function renderFridayPreFirstRace(now){
-  const nowMs = now.getTime();
-  const deltaSec = Math.max(0, Math.floor((firstRaceInstantMs - nowMs) / 1000));
-  const fridayKey = dateKeyLocal(now);
-  const nextTaskStartSec = nextTaskStartSecOnDay(schedule, now, fridayKey);
+function renderFridayPreFirstRace(ctx){
+  const deltaSec = Math.max(0, Math.floor((firstRaceInstantMs - ctx.nowMs) / 1000));
+  const venueTodayKey = ctx.dateKey;
+  const nextTaskStartSec = nextTaskStartSecOnDay(schedule, ctx, venueTodayKey);
 
   if (firstRaceMinOfDay != null){
     document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(firstRaceMinOfDay * 60);
@@ -1349,7 +1375,7 @@ function renderFridayPreFirstRace(now){
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
   }
 
-  refreshTaskTimersList(schedule, now, null, null, nextTaskStartSec, fridayKey);
+  refreshTaskTimersList(schedule, ctx, null, nextTaskStartSec, venueTodayKey);
 
   document.getElementById("raceCountdownTitle").textContent = "First Race";
   const raceCd = document.getElementById("raceCountdown");
@@ -1370,15 +1396,14 @@ function renderFridayPreFirstRace(now){
 }
 
 function render(){
-  const now = new Date();
-  const nowSec = nowSecondsOfDay(now);
+  const ctx = scheduleNowContext(new Date());
   document.getElementById("currentTimeLabel").textContent =
     `Current time (${scheduleTzShortLabel()})`;
-  document.getElementById("now").textContent = formatHMS(now);
+  document.getElementById("now").textContent = formatHMS(ctx.now);
 
   document.getElementById("msg").textContent = loadError;
 
-  const closed = isSailingWindowClosed(now);
+  const closed = isSailingWindowClosed(ctx.now);
   if (closed){
     document.getElementById("nextTaskTime").textContent = "";
     document.getElementById("nextTaskName").textContent = "—";
@@ -1398,15 +1423,15 @@ function render(){
     return;
   }
 
-  if (isFridayPreFirstRaceMode(now)){
-    renderFridayPreFirstRace(now);
+  if (isFridayPreFirstRaceMode(ctx.now)){
+    renderFridayPreFirstRace(ctx);
     return;
   }
 
-  // NEXT TASK — from next upcoming phase after now
-  const taskChain = chainAfterNowSec(nowSec, null);
+  // NEXT TASK — from next upcoming phase after now (venue TZ)
+  const taskChain = chainAfterNowSec(ctx.nowSec, null);
   const nextTaskInfo = taskChain.length
-    ? { next: taskChain[0], deltaSec: Math.max(0, taskChain[0].startSec - nowSec) }
+    ? { next: taskChain[0], deltaSec: Math.max(0, taskChain[0].startSec - ctx.nowSec) }
     : null;
 
   if (nextTaskInfo){
@@ -1420,14 +1445,14 @@ function render(){
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
   }
 
-  const active = findActive(now);
+  const active = findActive(ctx.now);
   const nextTaskStartSec = taskChain.length ? taskChain[0].startSec : null;
-  refreshTaskTimersList(schedule, now, nowSec, active, nextTaskStartSec, null);
+  refreshTaskTimersList(schedule, ctx, active, nextTaskStartSec, null);
 
   // NEXT RACE — one entry per logical race (see dedupeRacePhasesByLogicalRace)
-  const raceChain = raceChainAfterNowSec(nowSec);
+  const raceChain = raceChainAfterNowSec(ctx.nowSec);
   const nextRaceInfo = raceChain.length
-    ? { next: raceChain[0], deltaSec: Math.max(0, raceChain[0].startSec - nowSec) }
+    ? { next: raceChain[0], deltaSec: Math.max(0, raceChain[0].startSec - ctx.nowSec) }
     : null;
 
   if (nextRaceInfo){
