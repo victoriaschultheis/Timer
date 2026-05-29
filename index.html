@@ -470,7 +470,7 @@
  * Schedule markers: only from sheet row 24 downward (rows above are ignored for T-minus phases).
  * Event date: sheet row 23, column H (value next to “Date” in G23 for this tab).
  * Venue timezone: N23 (e.g. America/New_York). First race: M24 (date), N24 (time).
- * On Friday (venue TZ) before first race: “First Race” countdown to M24/N24; task list uses Friday times.
+ * On Friday (venue TZ) before first race: “First Race” countdown to M24/N24; next task + task list use Friday (venue today).
  * Sat/Sun: normal same-day schedule logic.
  * Published CSV: gid=571089878. Schedule times in H/I from row 24 downward.
  */
@@ -1360,18 +1360,35 @@ function nextTaskStartSecOnDay(schedule, ctx, dayKey){
   return null;
 }
 
+function findEventByStartSec(startSec){
+  if (startSec == null) return null;
+  return schedule.find(ev => ev.startSec === startSec) ?? null;
+}
+
+/** Races on first-race calendar day (M24) still in the future — for Friday “Up next”. */
+function upcomingRacesOnFirstRaceDay(ctx){
+  if (!firstRaceDateKey) return [];
+  const races = dedupeRacePhasesByLogicalRace(
+    schedule.filter(isRace).sort((a, b) => a.startSec - b.startSec)
+  );
+  return races.filter(
+    ev => ctx.nowMs < zonedWallClockToMs(firstRaceDateKey, ev.startMin, scheduleTz)
+  );
+}
+
 function renderFridayPreFirstRace(ctx){
   const deltaSec = Math.max(0, Math.floor((firstRaceInstantMs - ctx.nowMs) / 1000));
   const venueTodayKey = ctx.dateKey;
   const nextTaskStartSec = nextTaskStartSecOnDay(schedule, ctx, venueTodayKey);
+  const nextTask = findEventByStartSec(nextTaskStartSec);
 
-  if (firstRaceMinOfDay != null){
-    document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(firstRaceMinOfDay * 60);
-    document.getElementById("nextTaskName").textContent = "First race";
+  if (nextTask){
+    document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(nextTask.startSec);
+    document.getElementById("nextTaskName").textContent = nextTask.name ? nextTask.name : "—";
     document.getElementById("nextTaskBox").classList.remove("next-task-empty");
   } else {
     document.getElementById("nextTaskTime").textContent = "";
-    document.getElementById("nextTaskName").textContent = "First race";
+    document.getElementById("nextTaskName").textContent = "No upcoming tasks";
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
   }
 
@@ -1382,16 +1399,14 @@ function renderFridayPreFirstRace(ctx){
   raceCd.textContent = formatCountdownToFirstRace(deltaSec);
   raceCd.classList.remove("is-closed");
 
-  const racePhases = dedupeRacePhasesByLogicalRace(
-    schedule.filter(isRace).sort((a, b) => a.startSec - b.startSec)
-  );
+  const racePhases = upcomingRacesOnFirstRaceDay(ctx);
   if (racePhases.length){
     const lines = racePhases.slice(0, 4).map(ev => upNextRaceLineHtml(ev)).join("");
     document.getElementById("upNextRaces").innerHTML =
       `<div class="listBlock-inner">${lines}</div>`;
   } else {
     document.getElementById("upNextRaces").innerHTML =
-      "<div class=\"upnext-msg muted\">Race schedule (race day)</div>";
+      "<div class=\"upnext-msg muted\">No upcoming races</div>";
   }
 }
 
