@@ -382,7 +382,7 @@
       <div class="row">
         <div class="grid2 pair-row">
           <div class="box box-current-time">
-            <div class="label">Current time</div>
+            <div class="label" id="currentTimeLabel">Current time</div>
             <div class="slot-mid"><div id="now" class="mid nums midW">00:00:00</div></div>
           </div>
 
@@ -431,9 +431,13 @@
  * - column I: name/description for the block that starts at that row’s time
  * Schedule markers: only from sheet row 24 downward (rows above are ignored for T-minus phases).
  * Event date: sheet row 23, column H (value next to “Date” in G23 for this tab).
- * Published CSV: gid=571089878. Top rows may also list times in A/C; the timer uses the H/I block from row 24.
+ * Venue timezone: N23 (e.g. America/New_York). First race: M24 (date), N24 (time).
+ * On Friday (venue TZ) before first race: big “until first race” countdown; task list uses race-day times.
+ * Sat/Sun: normal same-day schedule logic.
+ * Published CSV: gid=571089878. Schedule times in H/I from row 24 downward.
  */
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=571089878&single=true&output=csv";
+const DEFAULT_SCHEDULE_TZ = "America/New_York";
 // Cache-busting per fetch (important: Date.now() must be evaluated each time)
 function csvUrl(){
   return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
@@ -446,6 +450,18 @@ const COL_NAME = 8; // I
 const DATE_CELL_ROW = 23 - 1; // 22
 const DATE_VALUE_COLS = [7]; // H
 
+// Venue IANA timezone — N23 (primary).
+const VENUE_CELL_ROW = 23 - 1; // 22
+const COL_VENUE = 13; // N
+// Legacy / fallback timezone cells.
+const TIMEZONE_CELL_ROW = 22 - 1;
+const TIMEZONE_VALUE_COLS = [7, 8, 6];
+
+// First race (Friday preview): M24 date, N24 time (venue TZ).
+const FIRST_RACE_CFG_ROW = 24 - 1; // 23
+const COL_FIRST_RACE_DATE = 12; // M
+const COL_FIRST_RACE_TIME = 13; // N
+
 // Schedule times/names: only read from this row onward (1-based sheet row 24 → index 23).
 const SCHEDULE_FIRST_ROW_INDEX = 24 - 1;
 
@@ -453,9 +469,15 @@ const SCHEDULE_FIRST_ROW_INDEX = 24 - 1;
 const SCHEDULE_REFRESH_MS = 4000;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
-let windowEndSec = null; // sailing day ends at this second-of-day (local)
+let windowEndSec = null; // sailing day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from H23
+/** IANA timezone from sheet (N23 / “Timezone” label); fallback DEFAULT_SCHEDULE_TZ. */
+let scheduleTz = DEFAULT_SCHEDULE_TZ;
+/** First race instant (ms) from M24+N24; null if not set. */
+let firstRaceInstantMs = null;
+let firstRaceDateKey = null;
+let firstRaceMinOfDay = null;
 let loadError = "";
 /** One fetch at a time — avoids overlapping requests returning in random order from Google’s cache. */
 let scheduleLoadPromise = null;
@@ -477,8 +499,207 @@ function upNextRaceLineHtml(ev){
 
 function pad2(n){ return String(n).padStart(2,"0"); }
 
+const TZ_ALIASES = {
+  "new york": "America/New_York",
+  "ny": "America/New_York",
+  "nyc": "America/New_York",
+  "los angeles": "America/Los_Angeles",
+  "la": "America/Los_Angeles",
+  "san francisco": "America/Los_Angeles",
+  "london": "Europe/London",
+  "uk": "Europe/London",
+  "cet": "Europe/Berlin",
+  "berlin": "Europe/Berlin",
+  "paris": "Europe/Paris",
+  "sydney": "Australia/Sydney",
+  "auckland": "Pacific/Auckland",
+  "dubai": "Asia/Dubai",
+  "singapore": "Asia/Singapore",
+};
+
+function isValidTimeZone(tz){
+  try{
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeTimeZoneInput(raw){
+  const s = String(raw ?? "").trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (TZ_ALIASES[lower]) return TZ_ALIASES[lower];
+  if (/^[A-Za-z]+\/[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)?$/.test(s)) return s;
+  return null;
+}
+
+function resolveTimeZone(raw){
+  const candidate = normalizeTimeZoneInput(raw);
+  if (!candidate || !isValidTimeZone(candidate)) return null;
+  return candidate;
+}
+
+function cellInRow(row, col){
+  if (!row || col < 0 || col >= row.length) return "";
+  return String(row[col] ?? "").trim();
+}
+
+function parseTimeZoneFromRows(rows){
+  if (!rows?.length) return { tz: DEFAULT_SCHEDULE_TZ, warning: "" };
+
+  const venueRow = rows[VENUE_CELL_ROW];
+  if (venueRow){
+    const tz = resolveTimeZone(cellInRow(venueRow, COL_VENUE));
+    if (tz) return { tz, warning: "" };
+  }
+
+  const fixed = rows[TIMEZONE_CELL_ROW];
+  if (fixed){
+    for (const c of TIMEZONE_VALUE_COLS){
+      const tz = resolveTimeZone(cellInRow(fixed, c));
+      if (tz) return { tz, warning: "" };
+    }
+  }
+
+  for (let i = 0; i < rows.length; i++){
+    const row = rows[i];
+    for (let j = 0; j < row.length; j++){
+      const label = cellInRow(row, j).toLowerCase();
+      if (label !== "timezone" && label !== "time zone" && label !== "location") continue;
+      const tryCols = [j + 1, j + 2, 7, 8, 6];
+      const seen = new Set();
+      for (const c of tryCols){
+        if (seen.has(c)) continue;
+        seen.add(c);
+        const tz = resolveTimeZone(cellInRow(row, c));
+        if (tz) return { tz, warning: "" };
+      }
+    }
+  }
+
+  let hadInvalid = false;
+  if (fixed){
+    for (const c of TIMEZONE_VALUE_COLS){
+      if (cellInRow(fixed, c)) hadInvalid = true;
+    }
+  }
+  const hadInvalidVenue = venueRow && cellInRow(venueRow, COL_VENUE);
+  const warning = (hadInvalid || hadInvalidVenue)
+    ? `Invalid timezone in N23 (e.g. America/New_York). Using ${DEFAULT_SCHEDULE_TZ}.`
+    : "";
+  return { tz: DEFAULT_SCHEDULE_TZ, warning };
+}
+
+function getScheduleTzPartsFromMs(ms, tz = scheduleTz){
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(new Date(ms));
+  const num = t => Number(parts.find(p => p.type === t)?.value ?? 0);
+  let hour = num("hour");
+  if (hour === 24) hour = 0;
+  return {
+    year: num("year"),
+    month: num("month"),
+    day: num("day"),
+    hour,
+    minute: num("minute"),
+    second: num("second"),
+  };
+}
+
+function dateKeyFromTzParts(p){
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
+}
+
+function dateKeyToUtcDayStart(dateKey){
+  const [y, m, d] = dateKey.split("-").map(Number);
+  return Date.UTC(y, m - 1, d);
+}
+
+/** Wall-clock on `dateKey` at minutes-from-midnight in `tz` → UTC ms. */
+function zonedWallClockToMs(dateKey, minOfDay, tz = scheduleTz){
+  const [yy, mo, dd] = dateKey.split("-").map(Number);
+  const targetH = Math.floor(minOfDay / 60);
+  const targetM = minOfDay % 60;
+  let utc = Date.UTC(yy, mo - 1, dd, targetH, targetM, 0);
+  for (let i = 0; i < 6; i++){
+    const p = getScheduleTzPartsFromMs(utc, tz);
+    const curKey = dateKeyFromTzParts(p);
+    const curMin = p.hour * 60 + p.minute;
+    if (curKey === dateKey && curMin === minOfDay) return utc;
+    const dayDiff = Math.round((dateKeyToUtcDayStart(dateKey) - dateKeyToUtcDayStart(curKey)) / 86400000);
+    const minDiff = dayDiff * 1440 + (minOfDay - curMin);
+    utc += minDiff * 60 * 1000;
+  }
+  return utc;
+}
+
+function parseFirstRaceFromRows(rows, tz = scheduleTz){
+  const row = rows[FIRST_RACE_CFG_ROW];
+  if (!row) return { ms: null, dateKey: null, minOfDay: null };
+  const dateKey = parseDateToKey(cellInRow(row, COL_FIRST_RACE_DATE));
+  const minOfDay = parseTimeToMinutes(cellInRow(row, COL_FIRST_RACE_TIME));
+  if (!dateKey || minOfDay === null) return { ms: null, dateKey, minOfDay };
+  const ms = zonedWallClockToMs(dateKey, minOfDay, tz);
+  return { ms, dateKey, minOfDay };
+}
+
+function isFridayInScheduleTz(d = new Date()){
+  const wd = new Intl.DateTimeFormat("en-US", {
+    timeZone: scheduleTz,
+    weekday: "short",
+  }).format(d);
+  return wd === "Fri";
+}
+
+/** Friday (venue TZ) before first race — preview schedule + countdown to M24/N24. */
+function isFridayPreFirstRaceMode(now = new Date()){
+  if (firstRaceInstantMs == null) return false;
+  if (!isFridayInScheduleTz(now)) return false;
+  return now.getTime() < firstRaceInstantMs;
+}
+
+function scheduleTzShortLabel(tz = scheduleTz){
+  try{
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      timeZoneName: "short",
+    }).formatToParts(new Date());
+    const name = parts.find(p => p.type === "timeZoneName")?.value;
+    if (name) return name;
+  } catch { /* fall through */ }
+  const seg = tz.split("/").pop() || tz;
+  return seg.replace(/_/g, " ");
+}
+
+function getScheduleTzParts(d = new Date()){
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: scheduleTz,
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const parts = fmt.formatToParts(d);
+  const num = t => Number(parts.find(p => p.type === t)?.value ?? 0);
+  let hour = num("hour");
+  if (hour === 24) hour = 0;
+  return { hour, minute: num("minute"), second: num("second") };
+}
+
 function formatHMS(d){
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  const { hour, minute, second } = getScheduleTzParts(d);
+  return `${pad2(hour)}:${pad2(minute)}:${pad2(second)}`;
 }
 
 function formatHMfromSeconds(sec){
@@ -494,7 +715,8 @@ function formatHMwithFixedSec(sec){
 }
 
 function nowSecondsOfDay(d){
-  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+  const { hour, minute, second } = getScheduleTzParts(d);
+  return hour * 3600 + minute * 60 + second;
 }
 
 /** Always HH:MM:SS so width stays constant (with tabular nums). */
@@ -505,9 +727,26 @@ function formatCountdown(deltaSec){
   return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
 }
 
+/** Multi-day countdown for Friday → first race (e.g. 1d2h20m). */
+function formatCountdownToFirstRace(deltaSec){
+  if (deltaSec <= 0) return "00:00:00";
+  const d = Math.floor(deltaSec / 86400);
+  let rem = deltaSec % 86400;
+  const h = Math.floor(rem / 3600);
+  rem %= 3600;
+  const m = Math.floor(rem / 60);
+  if (d > 0) return `${d}d${h}h${m}m`;
+  return formatCountdown(deltaSec);
+}
+
 function dateKeyLocal(d){
-  // local date as YYYY-MM-DD
-  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  // Event “today” in schedule TZ (YYYY-MM-DD)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: scheduleTz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
 }
 
 /** Google/Excel serial whole days since 1899-12-30 (UTC). */
@@ -674,11 +913,15 @@ async function loadSchedule(){
 
     const rows = parseCSV(txt);
 
+    const tzResult = parseTimeZoneFromRows(rows);
+    const nextScheduleTz = tzResult.tz;
+
     const nextEventDateKey = parseEventDateFromRows(rows);
-    let nextLoadError = "";
+    let nextLoadError = tzResult.warning;
     if (!nextEventDateKey){
-      nextLoadError =
+      const dateErr =
         "Could not parse event date from H23. Use YYYY-MM-DD or DD/MM/YYYY.";
+      nextLoadError = nextLoadError ? `${nextLoadError} ${dateErr}` : dateErr;
     }
 
     const markers = [];
@@ -723,8 +966,12 @@ async function loadSchedule(){
       nextWindowEndSec = merged[merged.length - 1].startMin * 60;
     }
 
+    const nextFirstRace = parseFirstRaceFromRows(rows, nextScheduleTz);
+
     const sameData =
       nextEventDateKey === eventDateKey &&
+      nextScheduleTz === scheduleTz &&
+      nextFirstRace.ms === firstRaceInstantMs &&
       nextLoadError === loadError &&
       nextWindowEndSec === windowEndSec &&
       schedulesEqual(nextSchedule, schedule);
@@ -735,10 +982,14 @@ async function loadSchedule(){
       return;
     }
 
+    scheduleTz = nextScheduleTz;
     eventDateKey = nextEventDateKey;
     loadError = nextLoadError;
     schedule = nextSchedule;
     windowEndSec = nextWindowEndSec;
+    firstRaceInstantMs = nextFirstRace.ms;
+    firstRaceDateKey = nextFirstRace.dateKey;
+    firstRaceMinOfDay = nextFirstRace.minOfDay;
     lastCommittedCsvText = normTxt;
     lastFetchMs = Date.now();
   } catch (e){
@@ -813,6 +1064,8 @@ function chainAfterNowSec(nowSec, predicate){
 }
 
 function isSailingWindowClosed(now){
+  if (isFridayPreFirstRaceMode(now)) return false;
+
   if (eventDateKey){
     const todayKey = dateKeyLocal(now);
     if (todayKey !== eventDateKey) return true;
@@ -895,9 +1148,84 @@ function buildTaskTimersHtml(schedule, nowSec, activeEv){
   return parts.join("");
 }
 
+/** Friday preview: countdowns to each task on the first-race calendar day (M24). */
+function buildTaskTimersHtmlRaceDay(schedule, now, raceDayKey){
+  if (!schedule.length || !raceDayKey){
+    return "<div class=\"task-timers-empty\">No tasks loaded</div>";
+  }
+  const nowMs = now.getTime();
+  const parts = [];
+  for (const ev of schedule){
+    const startMs = zonedWallClockToMs(raceDayKey, ev.startMin, scheduleTz);
+    const endMs = zonedWallClockToMs(raceDayKey, Math.floor(ev.endSec / 60), scheduleTz);
+    const ended = nowMs >= endMs;
+    const future = nowMs < startMs;
+    let cls = "task-timer-row";
+    let cd;
+    if (ended){
+      cd = "00:00:00";
+    } else if (future){
+      cd = formatCountdown(Math.max(0, Math.floor((startMs - nowMs) / 1000)));
+    } else {
+      cls = "task-timer-row is-active";
+      cd = formatCountdown(Math.max(0, Math.floor((endMs - nowMs) / 1000)));
+    }
+    const tStart = formatHMfromSeconds(ev.startSec);
+    const name = escapeHtml(ev.name || "(no label)");
+    parts.push(
+      `<div class="${cls}">` +
+        `<div class="task-timer-meta">` +
+        `<span class="task-timer-start nums">${tStart}</span>` +
+        `<span class="task-timer-name">${name}</span>` +
+        `</div>` +
+        `<div class="task-timer-nums nums">${cd}</div>` +
+        `</div>`
+    );
+  }
+  return parts.join("");
+}
+
+function renderFridayPreFirstRace(now){
+  const nowMs = now.getTime();
+  const deltaSec = Math.max(0, Math.floor((firstRaceInstantMs - nowMs) / 1000));
+  const raceDayKey = firstRaceDateKey || eventDateKey;
+
+  if (firstRaceMinOfDay != null){
+    document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(firstRaceMinOfDay * 60);
+    document.getElementById("nextTaskName").textContent = "First race";
+    document.getElementById("nextTaskBox").classList.remove("next-task-empty");
+  } else {
+    document.getElementById("nextTaskTime").textContent = "";
+    document.getElementById("nextTaskName").textContent = "First race";
+    document.getElementById("nextTaskBox").classList.add("next-task-empty");
+  }
+
+  document.getElementById("taskTimersList").innerHTML =
+    buildTaskTimersHtmlRaceDay(schedule, now, raceDayKey);
+
+  document.getElementById("raceCountdownTitle").textContent = "Until first race";
+  const raceCd = document.getElementById("raceCountdown");
+  raceCd.textContent = formatCountdownToFirstRace(deltaSec);
+  raceCd.classList.remove("is-closed");
+
+  const racePhases = dedupeRacePhasesByLogicalRace(
+    schedule.filter(isRace).sort((a, b) => a.startSec - b.startSec)
+  );
+  if (racePhases.length){
+    const lines = racePhases.slice(0, 4).map(ev => upNextRaceLineHtml(ev)).join("");
+    document.getElementById("upNextRaces").innerHTML =
+      `<div class="listBlock-inner">${lines}</div>`;
+  } else {
+    document.getElementById("upNextRaces").innerHTML =
+      "<div class=\"upnext-msg muted\">Race schedule (race day)</div>";
+  }
+}
+
 function render(){
   const now = new Date();
   const nowSec = nowSecondsOfDay(now);
+  document.getElementById("currentTimeLabel").textContent =
+    `Current time (${scheduleTzShortLabel()})`;
   document.getElementById("now").textContent = formatHMS(now);
 
   document.getElementById("msg").textContent = loadError;
@@ -917,6 +1245,11 @@ function render(){
 
     document.getElementById("upNextRaces").innerHTML = "";
 
+    return;
+  }
+
+  if (isFridayPreFirstRaceMode(now)){
+    renderFridayPreFirstRace(now);
     return;
   }
 
