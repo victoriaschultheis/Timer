@@ -470,44 +470,38 @@
 /**
  * CONFIG
  * Google Sheets published CSV URL.
- * - column H: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
+ * - column Q: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
  *   The last time is end-of-window (no separate block after it).
- * - column I: name/description for the block that starts at that row’s time
- * Schedule markers: only from sheet row 24 downward (rows above are ignored for T-minus phases).
- * Event date: sheet row 23, column H (value next to “Date” in G23 for this tab).
- * Venue timezone: N23 (e.g. America/New_York). First race: M24 (date), N24 (time).
- * On Friday (venue TZ) before first race: “First Race” countdown to M24/N24; next task + task list use Friday (venue today).
+ * - column R: name/description for the block that starts at that row’s time
+ * Schedule markers: from sheet row 3 downward (Q3/R3 onward).
+ * Event date: Q2. Venue timezone: V2 (e.g. America/New_York).
+ * First race (Friday preview): date from Q2, time from first “Race …” row in Q/R schedule.
+ * On Friday (venue TZ) before first race: “First Race” countdown; next task + task list use Friday (venue today).
  * Sat/Sun: normal same-day schedule logic.
- * Published CSV: gid=571089878. Schedule times in H/I from row 24 downward.
  */
-const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=571089878&single=true&output=csv";
+const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=21070774&single=true&output=csv";
 const DEFAULT_SCHEDULE_TZ = "America/New_York";
 // Cache-busting per fetch (important: Date.now() must be evaluated each time)
 function csvUrl(){
   return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
 }
 
-const COL_TIME = 7; // H
-const COL_NAME = 8; // I
+const COL_TIME = 16; // Q
+const COL_NAME = 17; // R
 
-// Event date cell (H23).
-const DATE_CELL_ROW = 23 - 1; // 22
-const DATE_VALUE_COLS = [7]; // H
+// Event date cell (Q2).
+const DATE_CELL_ROW = 2 - 1; // 1
+const DATE_VALUE_COLS = [16]; // Q
 
-// Venue IANA timezone — N23 (primary).
-const VENUE_CELL_ROW = 23 - 1; // 22
-const COL_VENUE = 13; // N
+// Venue IANA timezone — V2 (primary).
+const VENUE_CELL_ROW = 2 - 1; // 1
+const COL_VENUE = 21; // V
 // Legacy / fallback timezone cells.
 const TIMEZONE_CELL_ROW = 22 - 1;
-const TIMEZONE_VALUE_COLS = [7, 8, 6];
+const TIMEZONE_VALUE_COLS = [21, 16, 17, 7, 8, 6];
 
-// First race (Friday preview): M24 date, N24 time (venue TZ).
-const FIRST_RACE_CFG_ROW = 24 - 1; // 23
-const COL_FIRST_RACE_DATE = 12; // M
-const COL_FIRST_RACE_TIME = 13; // N
-
-// Schedule times/names: only read from this row onward (1-based sheet row 24 → index 23).
-const SCHEDULE_FIRST_ROW_INDEX = 24 - 1;
+// Schedule times/names: from sheet row 3 onward (1-based row 3 → index 2).
+const SCHEDULE_FIRST_ROW_INDEX = 3 - 1;
 
 // Re-fetch published CSV this often (clock still updates every 1s).
 const SCHEDULE_REFRESH_MS = 4000;
@@ -515,10 +509,10 @@ const SCHEDULE_REFRESH_MS = 4000;
 let schedule = [];
 let windowEndSec = null; // sailing day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
-let eventDateKey = null; // YYYY-MM-DD from H23
-/** IANA timezone from sheet (N23 / “Timezone” label); fallback DEFAULT_SCHEDULE_TZ. */
+let eventDateKey = null; // YYYY-MM-DD from Q2
+/** IANA timezone from sheet (V2 / “Timezone” label); fallback DEFAULT_SCHEDULE_TZ. */
 let scheduleTz = DEFAULT_SCHEDULE_TZ;
-/** First race instant (ms) from M24+N24; null if not set. */
+/** First race instant (ms) from Q2 + first Race row in schedule; null if not set. */
 let firstRaceInstantMs = null;
 let firstRaceDateKey = null;
 let firstRaceMinOfDay = null;
@@ -635,7 +629,7 @@ function parseTimeZoneFromRows(rows){
   }
   const hadInvalidVenue = venueRow && cellInRow(venueRow, COL_VENUE);
   const warning = (hadInvalid || hadInvalidVenue)
-    ? `Invalid timezone in N23 (e.g. America/New_York). Using ${DEFAULT_SCHEDULE_TZ}.`
+    ? `Invalid timezone in V2 (e.g. America/New_York). Using ${DEFAULT_SCHEDULE_TZ}.`
     : "";
   return { tz: DEFAULT_SCHEDULE_TZ, warning };
 }
@@ -692,17 +686,21 @@ function zonedWallClockToMs(dateKey, minOfDay, tz = scheduleTz){
   return utc;
 }
 
-function parseFirstRaceFromRows(rows, tz = scheduleTz){
-  const row = rows[FIRST_RACE_CFG_ROW];
-  if (!row) return { ms: null, dateKey: null, minOfDay: null };
-  const dateKey = parseDateToKey(cellInRow(row, COL_FIRST_RACE_DATE));
-  const minOfDay = parseTimeToMinutes(cellInRow(row, COL_FIRST_RACE_TIME));
-  if (!dateKey || minOfDay === null) return { ms: null, dateKey, minOfDay };
-  const ms = zonedWallClockToMs(dateKey, minOfDay, tz);
-  return { ms, dateKey, minOfDay };
+function parseFirstRaceFromSchedule(markers, eventDateKey, tz = scheduleTz){
+  if (!eventDateKey || !markers?.length) return { ms: null, dateKey: null, minOfDay: null };
+  const raceMarkers = markers
+    .filter(m => /^race/i.test(String(m.name ?? "").trim()))
+    .sort((a, b) => a.startMin - b.startMin);
+  if (!raceMarkers.length) return { ms: null, dateKey: eventDateKey, minOfDay: null };
+  const first = raceMarkers[0];
+  return {
+    ms: zonedWallClockToMs(eventDateKey, first.startMin, tz),
+    dateKey: eventDateKey,
+    minOfDay: first.startMin,
+  };
 }
 
-/** Wall-clock parts for an instant in the venue timezone (N23 / scheduleTz). */
+/** Wall-clock parts for an instant in the venue timezone (V2 / scheduleTz). */
 function getScheduleTzPartsFull(d = new Date(), tz = scheduleTz){
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
@@ -751,7 +749,7 @@ function isFridayInScheduleTz(d = new Date()){
   return scheduleNowContext(d).isFriday;
 }
 
-/** Friday (venue TZ) before first race — preview schedule + countdown to M24/N24. */
+/** Friday (venue TZ) before first race — preview schedule + countdown to first Race row on Q2. */
 function isFridayPreFirstRaceMode(now = new Date()){
   if (firstRaceInstantMs == null) return false;
   const ctx = scheduleNowContext(now);
@@ -1010,7 +1008,7 @@ async function loadSchedule(){
     let nextLoadError = tzResult.warning;
     if (!nextEventDateKey){
       const dateErr =
-        "Could not parse event date from H23. Use YYYY-MM-DD or DD/MM/YYYY.";
+        "Could not parse event date from Q2. Use YYYY-MM-DD or DD/MM/YYYY.";
       nextLoadError = nextLoadError ? `${nextLoadError} ${dateErr}` : dateErr;
     }
 
@@ -1056,7 +1054,7 @@ async function loadSchedule(){
       nextWindowEndSec = merged[merged.length - 1].startMin * 60;
     }
 
-    const nextFirstRace = parseFirstRaceFromRows(rows, nextScheduleTz);
+    const nextFirstRace = parseFirstRaceFromSchedule(merged, nextEventDateKey, nextScheduleTz);
 
     const sameData =
       nextEventDateKey === eventDateKey &&
@@ -1402,7 +1400,7 @@ function findEventByStartSec(startSec){
   return schedule.find(ev => ev.startSec === startSec) ?? null;
 }
 
-/** Races on first-race calendar day (M24) still in the future — for Friday “Up next”. */
+/** Races on event day (Q2) still in the future — for Friday “Up next”. */
 function upcomingRacesOnFirstRaceDay(ctx){
   if (!firstRaceDateKey) return [];
   const races = dedupeRacePhasesByLogicalRace(
