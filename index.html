@@ -510,7 +510,9 @@ const COL_VENUE = 21; // V
 const TIMEZONE_CELL_ROW = 22 - 1;
 const TIMEZONE_VALUE_COLS = [21, 16, 17, 7, 8, 6];
 // Re-fetch published CSV this often (clock still updates every 1s).
-const SCHEDULE_REFRESH_MS = 4000;
+const SCHEDULE_REFRESH_MS = 3000;
+/** Matching polls required before applying a schedule change (after first load). */
+const SCHEDULE_CHANGE_CONFIRM_POLLS = 2;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 /** Race-day A/C phases (for first-race countdown and up-next before event day). */
@@ -531,10 +533,9 @@ let scheduleLoadPromise = null;
 let lastCommittedCsvText = "";
 /** Parsed schedule fingerprint last shown in the UI. */
 let lastAppliedFingerprint = "";
-/** Fingerprint we moved away from on the last apply (stale CDN may serve it again). */
-let supersededFingerprint = "";
-let rollbackConfirmFp = "";
-let rollbackConfirmStreak = 0;
+/** Pending change — require consecutive matching polls before updating the UI. */
+let pendingApplyFp = "";
+let pendingApplyStreak = 0;
 /** Rebuild task list DOM only when row states change; keeps scroll position between ticks. */
 let lastTaskListStructureKey = "";
 let lastAutoScrollFocusStartSec = null;
@@ -1139,31 +1140,29 @@ async function loadSchedule(){
 
     if (nextFp === lastAppliedFingerprint){
       lastCommittedCsvText = normTxt;
-      rollbackConfirmFp = "";
-      rollbackConfirmStreak = 0;
+      pendingApplyFp = "";
+      pendingApplyStreak = 0;
       lastFetchMs = Date.now();
       return;
     }
 
-    // Google’s pub CSV CDN can briefly serve the previous snapshot after an edit.
-    // Apply new data immediately, but require two matching polls before reverting.
-    if (nextFp === supersededFingerprint){
-      if (nextFp === rollbackConfirmFp) rollbackConfirmStreak++;
-      else {
-        rollbackConfirmFp = nextFp;
-        rollbackConfirmStreak = 1;
-      }
-      if (rollbackConfirmStreak < 2){
-        lastFetchMs = Date.now();
-        return;
-      }
-    } else {
-      rollbackConfirmFp = "";
-      rollbackConfirmStreak = 0;
+    // Google’s pub CSV CDN alternates old/new snapshots after edits. Hold the UI
+    // on the last good version until the same parsed data appears twice in a row.
+    if (nextFp === pendingApplyFp) pendingApplyStreak++;
+    else {
+      pendingApplyFp = nextFp;
+      pendingApplyStreak = 1;
     }
 
-    supersededFingerprint = lastAppliedFingerprint;
+    const isFirstLoad = lastAppliedFingerprint === "";
+    if (!isFirstLoad && pendingApplyStreak < SCHEDULE_CHANGE_CONFIRM_POLLS){
+      lastFetchMs = Date.now();
+      return;
+    }
+
     lastAppliedFingerprint = nextFp;
+    pendingApplyFp = "";
+    pendingApplyStreak = 0;
     scheduleTz = nextScheduleTz;
     eventDateKey = nextEventDateKey;
     loadError = nextLoadError;
