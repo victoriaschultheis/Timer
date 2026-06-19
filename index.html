@@ -471,13 +471,11 @@
  * CONFIG
  * Google Sheets published CSV URL.
  * - column Q: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
- *   The last time is end-of-window (no separate block after it).
  * - column R: name/description for the block that starts at that row’s time
- * Schedule markers: from sheet row 3 downward (Q3/R3 onward).
- * Event date: Q2. Venue timezone: V2 (e.g. America/New_York).
- * First race (Friday preview): date from Q2, time from first “Race …” row in Q/R schedule.
- * On Friday (venue TZ) before first race: “First Race” countdown; next task + task list use Friday (venue today).
- * Sat/Sun: normal same-day schedule logic.
+ * Land schedule (Q/R): row 3 onward. Event date: Q2. Venue timezone: V2.
+ * Race-day on-water schedule: column A (time), column C (name), rows 1–23.
+ * Before event day (Q2): show Q/R tasks on venue “today”. On event day: switch to A/C.
+ * First race countdown uses the earliest Race row in the A/C block on Q2.
  */
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=1876653578&single=true&output=csv";
 /** Fallback when V2 is empty or unparseable; normal operation uses the sheet (V2). */
@@ -487,8 +485,19 @@ function csvUrl(){
   return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
 }
 
-const COL_TIME = 16; // Q
-const COL_NAME = 17; // R
+const LAND_COL_TIME = 16; // Q
+const LAND_COL_NAME = 17; // R
+const LAND_SCHEDULE_FIRST_ROW = 3 - 1;
+
+const RACE_DAY_COL_TIME = 0; // A
+const RACE_DAY_COL_NAME = 2; // C
+const RACE_DAY_FIRST_ROW = 1 - 1;
+const RACE_DAY_LAST_ROW = 24 - 1; // stop before footer rows
+
+// Legacy aliases (land / Q-R schedule).
+const COL_TIME = LAND_COL_TIME;
+const COL_NAME = LAND_COL_NAME;
+const SCHEDULE_FIRST_ROW_INDEX = LAND_SCHEDULE_FIRST_ROW;
 
 // Event date cell (Q2).
 const DATE_CELL_ROW = 2 - 1; // 1
@@ -500,20 +509,18 @@ const COL_VENUE = 21; // V
 // Legacy / fallback timezone cells.
 const TIMEZONE_CELL_ROW = 22 - 1;
 const TIMEZONE_VALUE_COLS = [21, 16, 17, 7, 8, 6];
-
-// Schedule times/names: from sheet row 3 onward (1-based row 3 → index 2).
-const SCHEDULE_FIRST_ROW_INDEX = 3 - 1;
-
 // Re-fetch published CSV this often (clock still updates every 1s).
 const SCHEDULE_REFRESH_MS = 4000;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
+/** Race-day A/C phases (for first-race countdown and up-next before event day). */
+let raceDaySchedule = [];
 let windowEndSec = null; // sailing day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from Q2
 /** IANA timezone from sheet (V2 / “Timezone” label); fallback DEFAULT_SCHEDULE_TZ. */
 let scheduleTz = DEFAULT_SCHEDULE_TZ;
-/** First race instant (ms) from Q2 + first Race row in schedule; null if not set. */
+/** First race instant (ms) from Q2 + earliest Race row in A/C block; null if not set. */
 let firstRaceInstantMs = null;
 let firstRaceDateKey = null;
 let firstRaceMinOfDay = null;
@@ -707,7 +714,7 @@ function zonedWallClockToMs(dateKey, minOfDay, tz = scheduleTz){
 function parseFirstRaceFromSchedule(markers, eventDateKey, tz = scheduleTz){
   if (!eventDateKey || !markers?.length) return { ms: null, dateKey: null, minOfDay: null };
   const raceMarkers = markers
-    .filter(m => /^race/i.test(String(m.name ?? "").trim()))
+    .filter(m => isRaceName(m.name))
     .sort((a, b) => a.startMin - b.startMin);
   if (!raceMarkers.length) return { ms: null, dateKey: eventDateKey, minOfDay: null };
   const first = raceMarkers[0];
@@ -715,6 +722,64 @@ function parseFirstRaceFromSchedule(markers, eventDateKey, tz = scheduleTz){
     ms: zonedWallClockToMs(eventDateKey, first.startMin, tz),
     dateKey: eventDateKey,
     minOfDay: first.startMin,
+  };
+}
+
+function isRaceName(name){
+  return /\brace\s*\d/i.test(String(name ?? "").trim());
+}
+
+function collectScheduleMarkers(rows, startRow, colTime, colName, endRow){
+  const markers = [];
+  const limit = Math.min(endRow ?? rows.length, rows.length);
+  for (let r = startRow; r < limit; r++){
+    const row = rows[r];
+    const timeCell = cellInRow(row, colTime);
+    const label = timeCell.toLowerCase();
+    if (label === "utc time difference" || label === "utc time") break;
+    const name = cellInRow(row, colName);
+    const startMin = parseTimeToMinutes(timeCell);
+    if (startMin === null) continue;
+    markers.push({ startMin, name, timeStr: timeCell });
+  }
+  return markers;
+}
+
+function mergeScheduleMarkers(markers){
+  const sorted = markers.slice().sort((a, b) => a.startMin - b.startMin);
+  const merged = [];
+  for (const m of sorted){
+    const prev = merged[merged.length - 1];
+    if (prev && prev.startMin === m.startMin){
+      if (m.name) prev.name = m.name;
+      prev.timeStr = m.timeStr;
+    } else {
+      merged.push({ startMin: m.startMin, name: m.name, timeStr: m.timeStr });
+    }
+  }
+  return merged;
+}
+
+function buildSchedulePhases(merged){
+  if (merged.length < 2){
+    return {
+      phases: [],
+      windowEndSec: merged.length === 1 ? merged[0].startMin * 60 : null,
+    };
+  }
+  const phases = [];
+  for (let i = 0; i < merged.length - 1; i++){
+    phases.push({
+      startSec: merged[i].startMin * 60,
+      endSec: merged[i + 1].startMin * 60,
+      startMin: merged[i].startMin,
+      name: merged[i].name,
+      timeStr: merged[i].timeStr,
+    });
+  }
+  return {
+    phases,
+    windowEndSec: merged[merged.length - 1].startMin * 60,
   };
 }
 
@@ -763,16 +828,15 @@ function scheduleNowContext(d = new Date()){
   };
 }
 
-function isFridayInScheduleTz(d = new Date()){
-  return scheduleNowContext(d).isFriday;
+/** Before event day (Q2): preview Q/R land schedule on venue “today”. */
+function isPreEventPreviewMode(now = new Date()){
+  if (!eventDateKey) return false;
+  const ctx = scheduleNowContext(now);
+  return ctx.dateKey < eventDateKey;
 }
 
-/** Friday (venue TZ) before first race — preview schedule + countdown to first Race row on Q2. */
-function isFridayPreFirstRaceMode(now = new Date()){
-  if (firstRaceInstantMs == null) return false;
-  const ctx = scheduleNowContext(now);
-  if (!ctx.isFriday) return false;
-  return ctx.nowMs < firstRaceInstantMs;
+function isFridayInScheduleTz(d = new Date()){
+  return scheduleNowContext(d).isFriday;
 }
 
 function scheduleTzShortLabel(tz = scheduleTz){
@@ -996,7 +1060,7 @@ function schedulesEqual(a, b){
   return true;
 }
 
-function computeScheduleFingerprint(tz, eventDateKey, windowEndSec, firstRaceMs, sched, err){
+function computeScheduleFingerprint(tz, eventDateKey, windowEndSec, firstRaceMs, sched, raceSched, err){
   return JSON.stringify({
     tz,
     eventDateKey,
@@ -1004,6 +1068,7 @@ function computeScheduleFingerprint(tz, eventDateKey, windowEndSec, firstRaceMs,
     firstRaceMs,
     err,
     phases: sched.map(scheduleSnapshotKey),
+    racePhases: raceSched.map(scheduleSnapshotKey),
   });
 }
 
@@ -1041,49 +1106,26 @@ async function loadSchedule(){
       nextLoadError = nextLoadError ? `${nextLoadError} ${dateErr}` : dateErr;
     }
 
-    const markers = [];
-    for (let r = SCHEDULE_FIRST_ROW_INDEX; r < rows.length; r++){
-      const timeStr = (rows[r][COL_TIME] ?? "").trim();
-      const name = (rows[r][COL_NAME] ?? "").trim();
-      const startMin = parseTimeToMinutes(timeStr);
-      if (startMin === null) continue;
-      markers.push({ startMin, name, timeStr });
-    }
+    const landMerged = mergeScheduleMarkers(collectScheduleMarkers(
+      rows, LAND_SCHEDULE_FIRST_ROW, LAND_COL_TIME, LAND_COL_NAME
+    ));
+    const raceMerged = mergeScheduleMarkers(collectScheduleMarkers(
+      rows, RACE_DAY_FIRST_ROW, RACE_DAY_COL_TIME, RACE_DAY_COL_NAME, RACE_DAY_LAST_ROW
+    ));
 
-    markers.sort((a, b) => a.startMin - b.startMin);
+    const todayKey = dateKeyFromTzParts(getScheduleTzPartsFull(new Date(), nextScheduleTz));
+    const useRaceDay = nextEventDateKey && todayKey === nextEventDateKey && raceMerged.length >= 2;
+    const activeMerged = useRaceDay ? raceMerged : landMerged;
 
-    const merged = [];
-    for (const m of markers){
-      const prev = merged[merged.length - 1];
-      if (prev && prev.startMin === m.startMin){
-        if (m.name) prev.name = m.name;
-        prev.timeStr = m.timeStr;
-      } else {
-        merged.push({ startMin: m.startMin, name: m.name, timeStr: m.timeStr });
-      }
-    }
+    const landBuilt = buildSchedulePhases(landMerged);
+    const raceBuilt = buildSchedulePhases(raceMerged);
+    const activeBuilt = useRaceDay ? raceBuilt : landBuilt;
 
-    let nextSchedule;
-    let nextWindowEndSec;
-    if (merged.length < 2){
-      nextSchedule = [];
-      nextWindowEndSec = merged.length === 1 ? merged[0].startMin * 60 : null;
-    } else {
-      const phases = [];
-      for (let i = 0; i < merged.length - 1; i++){
-        phases.push({
-          startSec: merged[i].startMin * 60,
-          endSec: merged[i + 1].startMin * 60,
-          startMin: merged[i].startMin,
-          name: merged[i].name,
-          timeStr: merged[i].timeStr,
-        });
-      }
-      nextSchedule = phases;
-      nextWindowEndSec = merged[merged.length - 1].startMin * 60;
-    }
+    const nextSchedule = activeBuilt.phases;
+    const nextRaceDaySchedule = raceBuilt.phases;
+    const nextWindowEndSec = activeBuilt.windowEndSec;
 
-    const nextFirstRace = parseFirstRaceFromSchedule(merged, nextEventDateKey, nextScheduleTz);
+    const nextFirstRace = parseFirstRaceFromSchedule(raceMerged, nextEventDateKey, nextScheduleTz);
 
     const nextFp = computeScheduleFingerprint(
       nextScheduleTz,
@@ -1091,6 +1133,7 @@ async function loadSchedule(){
       nextWindowEndSec,
       nextFirstRace.ms,
       nextSchedule,
+      nextRaceDaySchedule,
       nextLoadError
     );
 
@@ -1125,6 +1168,7 @@ async function loadSchedule(){
     eventDateKey = nextEventDateKey;
     loadError = nextLoadError;
     schedule = nextSchedule;
+    raceDaySchedule = nextRaceDaySchedule;
     windowEndSec = nextWindowEndSec;
     firstRaceInstantMs = nextFirstRace.ms;
     firstRaceDateKey = nextFirstRace.dateKey;
@@ -1146,7 +1190,7 @@ async function loadSchedule(){
 // ---- RACE DETECTION RULE ----
 // Count actual race blocks (e.g. "Race 1 (A1)…"), not pit-lane rows like "Pit lane - Race 2…".
 function isRace(ev){
-  return (ev.name || "").trim().toLowerCase().startsWith("race");
+  return isRaceName(ev.name);
 }
 
 /**
@@ -1203,7 +1247,7 @@ function chainAfterNowSec(nowSec, predicate){
 }
 
 function isSailingWindowClosed(now){
-  if (isFridayPreFirstRaceMode(now)) return false;
+  if (isPreEventPreviewMode(now)) return false;
 
   if (eventDateKey){
     const todayKey = dateKeyLocal(now);
@@ -1451,19 +1495,21 @@ function findEventByStartSec(startSec){
   return schedule.find(ev => ev.startSec === startSec) ?? null;
 }
 
-/** Races on event day (Q2) still in the future — for Friday “Up next”. */
+/** Races on event day (A/C block) still in the future — for pre-event “Up next”. */
 function upcomingRacesOnFirstRaceDay(ctx){
   if (!firstRaceDateKey) return [];
   const races = dedupeRacePhasesByLogicalRace(
-    schedule.filter(isRace).sort((a, b) => a.startSec - b.startSec)
+    raceDaySchedule.filter(isRace).sort((a, b) => a.startSec - b.startSec)
   );
   return races.filter(
     ev => ctx.nowMs < zonedWallClockToMs(firstRaceDateKey, ev.startMin, scheduleTz)
   );
 }
 
-function renderFridayPreFirstRace(ctx){
-  const deltaSec = Math.max(0, Math.floor((firstRaceInstantMs - ctx.nowMs) / 1000));
+function renderPreEventPreview(ctx){
+  const deltaSec = firstRaceInstantMs != null
+    ? Math.max(0, Math.floor((firstRaceInstantMs - ctx.nowMs) / 1000))
+    : 0;
   const venueTodayKey = ctx.dateKey;
   const nextTaskStartSec = nextTaskStartSecOnDay(schedule, ctx, venueTodayKey);
   const nextTask = findEventByStartSec(nextTaskStartSec);
@@ -1480,9 +1526,14 @@ function renderFridayPreFirstRace(ctx){
 
   refreshTaskTimersList(schedule, ctx, null, nextTaskStartSec, venueTodayKey);
 
-  document.getElementById("raceCountdownTitle").textContent = "First Race";
   const raceCd = document.getElementById("raceCountdown");
-  raceCd.textContent = formatCountdownToFirstRace(deltaSec);
+  if (firstRaceInstantMs != null){
+    document.getElementById("raceCountdownTitle").textContent = "First Race";
+    raceCd.textContent = formatCountdownToFirstRace(deltaSec);
+  } else {
+    document.getElementById("raceCountdownTitle").textContent = "First race";
+    raceCd.textContent = "--:--:--";
+  }
   raceCd.classList.remove("is-closed");
 
   const racePhases = upcomingRacesOnFirstRaceDay(ctx);
@@ -1524,8 +1575,8 @@ function render(){
     return;
   }
 
-  if (isFridayPreFirstRaceMode(ctx.now)){
-    renderFridayPreFirstRace(ctx);
+  if (isPreEventPreviewMode(ctx.now)){
+    renderPreEventPreview(ctx);
     return;
   }
 
