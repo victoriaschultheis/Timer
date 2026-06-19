@@ -522,6 +522,12 @@ let loadError = "";
 let scheduleLoadPromise = null;
 /** Normalized CSV last applied to `schedule`. */
 let lastCommittedCsvText = "";
+/** Parsed schedule fingerprint last shown in the UI. */
+let lastAppliedFingerprint = "";
+/** Fingerprint we moved away from on the last apply (stale CDN may serve it again). */
+let supersededFingerprint = "";
+let rollbackConfirmFp = "";
+let rollbackConfirmStreak = 0;
 /** Rebuild task list DOM only when row states change; keeps scroll position between ticks. */
 let lastTaskListStructureKey = "";
 let lastAutoScrollFocusStartSec = null;
@@ -990,6 +996,17 @@ function schedulesEqual(a, b){
   return true;
 }
 
+function computeScheduleFingerprint(tz, eventDateKey, windowEndSec, firstRaceMs, sched, err){
+  return JSON.stringify({
+    tz,
+    eventDateKey,
+    windowEndSec,
+    firstRaceMs,
+    err,
+    phases: sched.map(scheduleSnapshotKey),
+  });
+}
+
 /** Stable string for comparing published CSV bodies (line endings differ between responses). */
 function normalizeCsvBody(s){
   return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
@@ -1068,20 +1085,42 @@ async function loadSchedule(){
 
     const nextFirstRace = parseFirstRaceFromSchedule(merged, nextEventDateKey, nextScheduleTz);
 
-    const sameData =
-      nextEventDateKey === eventDateKey &&
-      nextScheduleTz === scheduleTz &&
-      nextFirstRace.ms === firstRaceInstantMs &&
-      nextLoadError === loadError &&
-      nextWindowEndSec === windowEndSec &&
-      schedulesEqual(nextSchedule, schedule);
+    const nextFp = computeScheduleFingerprint(
+      nextScheduleTz,
+      nextEventDateKey,
+      nextWindowEndSec,
+      nextFirstRace.ms,
+      nextSchedule,
+      nextLoadError
+    );
 
-    if (sameData){
+    if (nextFp === lastAppliedFingerprint){
       lastCommittedCsvText = normTxt;
+      rollbackConfirmFp = "";
+      rollbackConfirmStreak = 0;
       lastFetchMs = Date.now();
       return;
     }
 
+    // Google’s pub CSV CDN can briefly serve the previous snapshot after an edit.
+    // Apply new data immediately, but require two matching polls before reverting.
+    if (nextFp === supersededFingerprint){
+      if (nextFp === rollbackConfirmFp) rollbackConfirmStreak++;
+      else {
+        rollbackConfirmFp = nextFp;
+        rollbackConfirmStreak = 1;
+      }
+      if (rollbackConfirmStreak < 2){
+        lastFetchMs = Date.now();
+        return;
+      }
+    } else {
+      rollbackConfirmFp = "";
+      rollbackConfirmStreak = 0;
+    }
+
+    supersededFingerprint = lastAppliedFingerprint;
+    lastAppliedFingerprint = nextFp;
     scheduleTz = nextScheduleTz;
     eventDateKey = nextEventDateKey;
     loadError = nextLoadError;
