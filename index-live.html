@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Race Clock</title>
+  <title>Race Clock (Live API)</title>
   <style>
     :root {
       --bg-page: #ffffff;
@@ -428,6 +428,7 @@
       color: var(--text);
       font-weight: 800;
     }
+    .mode-nav-live .mode-nav-current { color: #002164; }
   </style>
 </head>
 <body>
@@ -435,10 +436,10 @@
     <div class="card">
       <header class="brand">
         <img class="brand-logo" src="ger-sailgp-logo.png" width="360" height="80" alt="Germany SailGP Team" />
-        <p class="mode-nav">
-          <span class="mode-nav-current">Published CSV</span>
+        <p class="mode-nav mode-nav-live">
+          <span class="mode-nav-current">Live sheet API</span>
           ·
-          <a href="index-live.html">Live sheet API</a>
+          <a href="index.html">Published CSV</a>
         </p>
       </header>
       <div class="row">
@@ -488,21 +489,17 @@
 
 <script>
 /**
- * CONFIG
- * Google Sheets published CSV URL.
- * - column Q: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
- * - column R: name/description for the block that starts at that row’s time
- * Land schedule (Q/R): row 3 onward — task list always uses this block, every day.
- * Event date: Q2. Venue timezone: V2.
- * A/C block (rows 1–23): races only — first-race countdown and “Up next (races)”.
- * Before event day (Q2): land tasks on venue “today”. On/after event day: land tasks on Q2.
+ * LIVE API CONFIG (index-live.html)
+ * Uses Google Apps Script web app — reads the sheet live (no published CSV / CDN cache).
+ * Deploy google-apps-script/ScheduleApi.gs in your sheet, then paste the /exec URL below.
+ * Revert anytime by using index.html (published CSV version).
  */
-const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=2126807151&single=true&output=csv";
+const SCHEDULE_API_URL = ""; // e.g. https://script.google.com/macros/s/…/exec
 /** Fallback when V2 is empty or unparseable; normal operation uses the sheet (V2). */
 const DEFAULT_SCHEDULE_TZ = "America/Halifax";
-// Cache-bust each fetch — Google’s pub CSV is heavily CDN-cached.
-function csvUrl(){
-  return `${CSV_URL_BASE}&t=${Date.now()}`;
+function scheduleApiUrl(){
+  const sep = SCHEDULE_API_URL.includes("?") ? "&" : "?";
+  return `${SCHEDULE_API_URL}${sep}t=${Date.now()}`;
 }
 
 const LAND_COL_TIME = 16; // Q
@@ -1091,73 +1088,98 @@ function normalizeCsvBody(s){
   return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
 }
 
+function markersFromApiList(list){
+  const markers = [];
+  for (const item of list || []){
+    const timeStr = String(item?.time ?? "").trim();
+    const startMin = parseTimeToMinutes(timeStr);
+    if (startMin === null) continue;
+    markers.push({
+      startMin,
+      name: String(item?.name ?? "").trim(),
+      timeStr,
+    });
+  }
+  return markers;
+}
+
+function commitScheduleState(nextScheduleTz, nextEventDateKey, nextLoadError, nextSchedule, nextRaceDaySchedule, nextWindowEndSec, nextFirstRace){
+  const nextFp = computeScheduleFingerprint(
+    nextScheduleTz,
+    nextEventDateKey,
+    nextWindowEndSec,
+    nextFirstRace.ms,
+    nextSchedule,
+    nextRaceDaySchedule,
+    nextLoadError
+  );
+  if (nextFp === scheduleDataFingerprint){
+    lastFetchMs = Date.now();
+    return;
+  }
+  scheduleDataFingerprint = nextFp;
+  scheduleTz = nextScheduleTz;
+  eventDateKey = nextEventDateKey;
+  loadError = nextLoadError;
+  schedule = nextSchedule;
+  raceDaySchedule = nextRaceDaySchedule;
+  windowEndSec = nextWindowEndSec;
+  firstRaceInstantMs = nextFirstRace.ms;
+  firstRaceDateKey = nextFirstRace.dateKey;
+  firstRaceMinOfDay = nextFirstRace.minOfDay;
+  lastFetchMs = Date.now();
+}
+
 async function loadSchedule(){
   if (scheduleLoadPromise) return scheduleLoadPromise;
 
   scheduleLoadPromise = (async () => {
   try{
-    const url = csvUrl();
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) throw new Error(`CSV fetch failed: ${res.status} ${res.statusText} (url: ${url})`);
+    if (!SCHEDULE_API_URL){
+      loadError = "Set SCHEDULE_API_URL to your Apps Script /exec URL.";
+      return;
+    }
 
-    const txt = await res.text();
-    const rows = parseCSV(normalizeCsvBody(txt));
+    const res = await fetch(scheduleApiUrl(), { cache: "no-store", redirect: "follow" });
+    if (!res.ok) throw new Error(`Schedule API failed: ${res.status} ${res.statusText}`);
 
-    const tzResult = parseTimeZoneFromRows(rows);
-    const nextScheduleTz = tzResult.tz;
+    const data = await res.json();
+    if (data?.error) throw new Error(data.error);
 
-    const nextEventDateKey = parseEventDateFromRows(rows);
-    let nextLoadError = tzResult.warning;
+    const venueRaw = String(data?.venue ?? "").trim();
+    const tzCandidate = resolveTimeZone(venueRaw);
+    let nextLoadError = "";
+    if (venueRaw && !tzCandidate){
+      nextLoadError =
+        `Invalid timezone in V2 (${venueRaw}). Using ${DEFAULT_SCHEDULE_TZ}.`;
+    }
+    const nextScheduleTz = tzCandidate || DEFAULT_SCHEDULE_TZ;
+
+    const nextEventDateKey = parseDateToKey(String(data?.eventDate ?? "").trim());
     if (!nextEventDateKey){
-      const dateErr =
-        "Could not parse event date from Q2. Use YYYY-MM-DD or DD/MM/YYYY.";
+      const dateErr = "Could not parse event date from Q2. Use YYYY-MM-DD or DD/MM/YYYY.";
       nextLoadError = nextLoadError ? `${nextLoadError} ${dateErr}` : dateErr;
     }
 
-    const landMerged = mergeScheduleMarkers(collectScheduleMarkers(
-      rows, LAND_SCHEDULE_FIRST_ROW, LAND_COL_TIME, LAND_COL_NAME
-    ));
-    const raceMerged = mergeScheduleMarkers(collectScheduleMarkers(
-      rows, RACE_DAY_FIRST_ROW, RACE_DAY_COL_TIME, RACE_DAY_COL_NAME, RACE_DAY_LAST_ROW
-    ));
+    const landMerged = mergeScheduleMarkers(markersFromApiList(data?.land));
+    const raceMerged = mergeScheduleMarkers(markersFromApiList(data?.races));
 
     const landBuilt = buildSchedulePhases(landMerged);
     const raceBuilt = buildSchedulePhases(raceMerged);
 
-    const nextSchedule = landBuilt.phases;
-    const nextRaceDaySchedule = raceBuilt.phases;
-    const nextWindowEndSec = landBuilt.windowEndSec;
-
     const nextFirstRace = parseFirstRaceFromSchedule(raceMerged, nextEventDateKey, nextScheduleTz);
 
-    const nextFp = computeScheduleFingerprint(
+    commitScheduleState(
       nextScheduleTz,
       nextEventDateKey,
-      nextWindowEndSec,
-      nextFirstRace.ms,
-      nextSchedule,
-      nextRaceDaySchedule,
-      nextLoadError
+      nextLoadError,
+      landBuilt.phases,
+      raceBuilt.phases,
+      landBuilt.windowEndSec,
+      nextFirstRace
     );
-
-    if (nextFp === scheduleDataFingerprint){
-      lastFetchMs = Date.now();
-      return;
-    }
-
-    scheduleDataFingerprint = nextFp;
-    scheduleTz = nextScheduleTz;
-    eventDateKey = nextEventDateKey;
-    loadError = nextLoadError;
-    schedule = nextSchedule;
-    raceDaySchedule = nextRaceDaySchedule;
-    windowEndSec = nextWindowEndSec;
-    firstRaceInstantMs = nextFirstRace.ms;
-    firstRaceDateKey = nextFirstRace.dateKey;
-    firstRaceMinOfDay = nextFirstRace.minOfDay;
-    lastFetchMs = Date.now();
   } catch (e){
-    loadError = "Couldn't load T-Minus sheet";
+    loadError = e?.message ? String(e.message) : "Couldn't load schedule from API";
   }
   })();
 
@@ -1629,8 +1651,9 @@ async function tick(){
 
 (async function init(){
   bindTaskTimersScroll();
-  if (!CSV_URL_BASE){
-    document.getElementById("msg").textContent = "CSV_URL_BASE is empty.";
+  if (!SCHEDULE_API_URL){
+    document.getElementById("msg").textContent =
+      "Set SCHEDULE_API_URL in index-live.html to your Apps Script /exec URL.";
   } else {
     await loadSchedule();
   }
