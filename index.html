@@ -472,10 +472,10 @@
  * Google Sheets published CSV URL.
  * - column Q: boundary times (HH:MM). Each row starts a block that runs until the next row’s time.
  * - column R: name/description for the block that starts at that row’s time
- * Land schedule (Q/R): row 3 onward. Event date: Q2. Venue timezone: V2.
- * Race-day on-water schedule: column A (time), column C (name), rows 1–23.
- * Before event day (Q2): show Q/R tasks on venue “today”. On event day: switch to A/C.
- * First race countdown uses the earliest Race row in the A/C block on Q2.
+ * Land schedule (Q/R): row 3 onward — task list always uses this block, every day.
+ * Event date: Q2. Venue timezone: V2.
+ * A/C block (rows 1–23): races only — first-race countdown and “Up next (races)”.
+ * Before event day (Q2): land tasks on venue “today”. On/after event day: land tasks on Q2.
  */
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=2126807151&single=true&output=csv";
 /** Fallback when V2 is empty or unparseable; normal operation uses the sheet (V2). */
@@ -515,7 +515,7 @@ const SCHEDULE_REFRESH_MS = 3000;
 const SCHEDULE_CHANGE_CONFIRM_POLLS = 2;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
-/** Race-day A/C phases (for first-race countdown and up-next before event day). */
+/** A/C race phases — first-race countdown and up-next races only (not the task list). */
 let raceDaySchedule = [];
 let windowEndSec = null; // sailing day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
@@ -1114,17 +1114,12 @@ async function loadSchedule(){
       rows, RACE_DAY_FIRST_ROW, RACE_DAY_COL_TIME, RACE_DAY_COL_NAME, RACE_DAY_LAST_ROW
     ));
 
-    const todayKey = dateKeyFromTzParts(getScheduleTzPartsFull(new Date(), nextScheduleTz));
-    const useRaceDay = nextEventDateKey && todayKey === nextEventDateKey && raceMerged.length >= 2;
-    const activeMerged = useRaceDay ? raceMerged : landMerged;
-
     const landBuilt = buildSchedulePhases(landMerged);
     const raceBuilt = buildSchedulePhases(raceMerged);
-    const activeBuilt = useRaceDay ? raceBuilt : landBuilt;
 
-    const nextSchedule = activeBuilt.phases;
+    const nextSchedule = landBuilt.phases;
     const nextRaceDaySchedule = raceBuilt.phases;
-    const nextWindowEndSec = activeBuilt.windowEndSec;
+    const nextWindowEndSec = landBuilt.windowEndSec;
 
     const nextFirstRace = parseFirstRaceFromSchedule(raceMerged, nextEventDateKey, nextScheduleTz);
 
