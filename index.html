@@ -511,8 +511,6 @@ const TIMEZONE_CELL_ROW = 22 - 1;
 const TIMEZONE_VALUE_COLS = [21, 16, 17, 7, 8, 6];
 // Re-fetch published CSV this often (clock still updates every 1s).
 const SCHEDULE_REFRESH_MS = 3000;
-/** Matching polls required before applying a schedule change (after first load). */
-const SCHEDULE_CHANGE_CONFIRM_POLLS = 2;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 /** A/C race phases — first-race countdown and up-next races only (not the task list). */
@@ -533,9 +531,6 @@ let scheduleLoadPromise = null;
 let lastCommittedCsvText = "";
 /** Parsed schedule fingerprint last shown in the UI. */
 let lastAppliedFingerprint = "";
-/** Pending change — require consecutive matching polls before updating the UI. */
-let pendingApplyFp = "";
-let pendingApplyStreak = 0;
 /** Rebuild task list DOM only when row states change; keeps scroll position between ticks. */
 let lastTaskListStructureKey = "";
 let lastAutoScrollFocusStartSec = null;
@@ -1135,29 +1130,11 @@ async function loadSchedule(){
 
     if (nextFp === lastAppliedFingerprint){
       lastCommittedCsvText = normTxt;
-      pendingApplyFp = "";
-      pendingApplyStreak = 0;
-      lastFetchMs = Date.now();
-      return;
-    }
-
-    // Google’s pub CSV CDN alternates old/new snapshots after edits. Hold the UI
-    // on the last good version until the same parsed data appears twice in a row.
-    if (nextFp === pendingApplyFp) pendingApplyStreak++;
-    else {
-      pendingApplyFp = nextFp;
-      pendingApplyStreak = 1;
-    }
-
-    const isFirstLoad = lastAppliedFingerprint === "";
-    if (!isFirstLoad && pendingApplyStreak < SCHEDULE_CHANGE_CONFIRM_POLLS){
       lastFetchMs = Date.now();
       return;
     }
 
     lastAppliedFingerprint = nextFp;
-    pendingApplyFp = "";
-    pendingApplyStreak = 0;
     scheduleTz = nextScheduleTz;
     eventDateKey = nextEventDateKey;
     loadError = nextLoadError;
