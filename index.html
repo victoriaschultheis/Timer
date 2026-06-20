@@ -480,9 +480,9 @@
 const CSV_URL_BASE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTbnxuPH_HDH9RdFUQmau6T_fX-FjygDnR-TNe6YJt5lf8vuG7Ls8TfopG4pTQOEL5b9V0QwKD3kdjM/pub?gid=2126807151&single=true&output=csv";
 /** Fallback when V2 is empty or unparseable; normal operation uses the sheet (V2). */
 const DEFAULT_SCHEDULE_TZ = "America/Halifax";
-// Cache-busting per fetch (important: Date.now() must be evaluated each time)
+// Cache-bust each fetch — Google’s pub CSV is heavily CDN-cached.
 function csvUrl(){
-  return `${CSV_URL_BASE}${CSV_URL_BASE.includes("?") ? "&" : "?"}t=${Date.now()}`;
+  return `${CSV_URL_BASE}&t=${Date.now()}`;
 }
 
 const LAND_COL_TIME = 16; // Q
@@ -525,12 +525,10 @@ let firstRaceInstantMs = null;
 let firstRaceDateKey = null;
 let firstRaceMinOfDay = null;
 let loadError = "";
-/** One fetch at a time — avoids overlapping requests returning in random order from Google’s cache. */
+/** One fetch at a time — avoids overlapping requests returning in random order. */
 let scheduleLoadPromise = null;
-/** Normalized CSV last applied to `schedule`. */
-let lastCommittedCsvText = "";
-/** Parsed schedule fingerprint last shown in the UI. */
-let lastAppliedFingerprint = "";
+/** Fingerprint of parsed schedule last applied — single change check after each fetch. */
+let scheduleDataFingerprint = "";
 /** Rebuild task list DOM only when row states change; keeps scroll position between ticks. */
 let lastTaskListStructureKey = "";
 let lastAutoScrollFocusStartSec = null;
@@ -1083,13 +1081,7 @@ async function loadSchedule(){
     if (!res.ok) throw new Error(`CSV fetch failed: ${res.status} ${res.statusText} (url: ${url})`);
 
     const txt = await res.text();
-    const normTxt = normalizeCsvBody(txt);
-    if (normTxt === lastCommittedCsvText){
-      lastFetchMs = Date.now();
-      return;
-    }
-
-    const rows = parseCSV(txt);
+    const rows = parseCSV(normalizeCsvBody(txt));
 
     const tzResult = parseTimeZoneFromRows(rows);
     const nextScheduleTz = tzResult.tz;
@@ -1128,13 +1120,12 @@ async function loadSchedule(){
       nextLoadError
     );
 
-    if (nextFp === lastAppliedFingerprint){
-      lastCommittedCsvText = normTxt;
+    if (nextFp === scheduleDataFingerprint){
       lastFetchMs = Date.now();
       return;
     }
 
-    lastAppliedFingerprint = nextFp;
+    scheduleDataFingerprint = nextFp;
     scheduleTz = nextScheduleTz;
     eventDateKey = nextEventDateKey;
     loadError = nextLoadError;
@@ -1144,7 +1135,6 @@ async function loadSchedule(){
     firstRaceInstantMs = nextFirstRace.ms;
     firstRaceDateKey = nextFirstRace.dateKey;
     firstRaceMinOfDay = nextFirstRace.minOfDay;
-    lastCommittedCsvText = normTxt;
     lastFetchMs = Date.now();
   } catch (e){
     loadError = "Couldn't load T-Minus sheet";
