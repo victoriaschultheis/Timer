@@ -494,12 +494,16 @@
  * Deploy google-apps-script/ScheduleApi.gs in your sheet, then paste the /exec URL below.
  * Revert anytime by using index.html (published CSV version).
  */
-const SCHEDULE_API_URL = "https://script.google.com/macros/s/AKfycbxg_1ZXURfyEziHGJTq75_OzdxzYq7iPJTwLVMq8v_qzp2daypKVdSvjKRykdlaKZrwfw/exec"; 
-/** Fallback when V2 is empty or unparseable; normal operation uses the sheet (V2). */
+const SCHEDULE_API_URL = "https://script.google.com/macros/s/AKfycbxYjcbK7C212yBo5bvKeyh05mYlt2yzEg1mZOtmDcCgwaX7s9y0yM5LNdAqqgz7XHD8UQ/exec";
+/** Tab to read (from sheet URL …#gid=…). Change when you switch day tabs, or use ?sheet= in the API. */
+const SCHEDULE_SHEET_GID = 43449268; // e.g. SUN NY
+/** Fallback when venue cell is empty or unparseable; normal operation uses E1 on the sheet. */
 const DEFAULT_SCHEDULE_TZ = "America/Halifax";
 function scheduleApiUrl(){
   const sep = SCHEDULE_API_URL.includes("?") ? "&" : "?";
-  return `${SCHEDULE_API_URL}${sep}t=${Date.now()}`;
+  let url = `${SCHEDULE_API_URL}${sep}t=${Date.now()}`;
+  if (SCHEDULE_SHEET_GID) url += `&gid=${SCHEDULE_SHEET_GID}`;
+  return url;
 }
 
 const LAND_COL_TIME = 16; // Q

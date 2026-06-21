@@ -3,63 +3,76 @@
  *
  * SETUP
  * 1. Open your Google Sheet → Extensions → Apps Script
- * 2. Paste this file (replace default Code.gs contents)
- * 3. Set SCHEDULE_SHEET_GID below to match your tab (from the sheet URL: gid=…)
- * 4. Deploy → New deployment → Type: Web app
- *    - Execute as: Me
- *    - Who has access: Anyone
- * 5. Copy the Web app URL (ends in /exec) into index-live.html → SCHEDULE_API_URL
+ * 2. Add this as ScheduleApi.gs (keep your onEdit in Code.gs)
+ * 3. Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone)
+ * 4. Copy the /exec URL into index-live.html → SCHEDULE_API_URL
  *
- * Sheet layout (same as index.html):
- *   Q2  event date    V2  venue timezone
- *   Q3+ times, R3+ names  (land schedule)
- *   A1–C23 on-water race markers (optional, for race countdown / up next)
+ * TAB SELECTION (pick one)
+ * - Default: SCHEDULE_SHEET_GID below (from tab URL …#gid=43449268)
+ * - Per request: ?gid=43449268 or ?sheet=SUN%20NY on the /exec URL
+ * - index-live.html can pass SCHEDULE_SHEET_GID on each poll
+ *
+ * SHEET LAYOUT (per-day tabs, e.g. SUN NY, SUN HFX)
+ *   Row 1:  B1 event date (e.g. 21/06/2026)   E1 venue (e.g. New York)
+ *   Row 2+:  A = time (HH:MM)                 C = task / event name
+ *   Rows whose name matches “Race 1…” go to races[] as well as land[].
  */
 
-const SCHEDULE_SHEET_GID = 2126807151;
+const SCHEDULE_SHEET_GID = 43449268;
 
-const ROW_META = 2;
-const COL_DATE = 17;   // Q
-const COL_VENUE = 22;  // V
+const ROW_META = 1;
+const COL_DATE = 2;   // B1
+const COL_VENUE = 5;  // E1
 
-const ROW_LAND_START = 3;
-const COL_LAND_TIME = 17;  // Q
-const COL_LAND_NAME = 18;  // R
+const ROW_SCHEDULE_START = 2;
+const COL_TIME = 1;   // A
+const COL_NAME = 3;   // C (B is often blank; falls back to B if C empty)
 
-const ROW_RACE_START = 1;
-const ROW_RACE_END = 23;
-const COL_RACE_TIME = 1;   // A
-const COL_RACE_NAME = 3;   // C
-
-function doGet() {
+function doGet(e) {
   try {
-    const sheet = getScheduleSheet_();
-    const payload = {
-      version: 1,
+    var params = (e && e.parameter) ? e.parameter : {};
+    var sheet = getScheduleSheet_(params.gid, params.sheet);
+    var all = readMarkerRows_(sheet, ROW_SCHEDULE_START, sheet.getLastRow(), COL_TIME, COL_NAME);
+    var races = all.filter(function(row) {
+      return /\brace\s*\d/i.test(String(row.name || ''));
+    });
+    var payload = {
+      version: 2,
       updatedAt: new Date().toISOString(),
       sheetGid: sheet.getSheetId(),
+      sheetName: sheet.getName(),
       eventDate: cellDisplay_(sheet, ROW_META, COL_DATE),
       venue: cellDisplay_(sheet, ROW_META, COL_VENUE),
-      land: readMarkerRows_(sheet, ROW_LAND_START, sheet.getLastRow(), COL_LAND_TIME, COL_LAND_NAME),
-      races: readMarkerRows_(sheet, ROW_RACE_START, ROW_RACE_END, COL_RACE_TIME, COL_RACE_NAME),
+      land: all,
+      races: races,
     };
     return jsonResponse_(payload);
   } catch (err) {
     return jsonResponse_({
-      version: 1,
+      version: 2,
       error: String(err && err.message ? err.message : err),
       updatedAt: new Date().toISOString(),
     });
   }
 }
 
-function getScheduleSheet_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheets = ss.getSheets();
-  for (let i = 0; i < sheets.length; i++) {
-    if (sheets[i].getSheetId() === SCHEDULE_SHEET_GID) return sheets[i];
+function getScheduleSheet_(gidParam, nameParam) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+
+  if (nameParam) {
+    var byName = ss.getSheetByName(String(nameParam).trim());
+    if (byName) return byName;
+    throw new Error('Schedule tab not found (name "' + nameParam + '").');
   }
-  throw new Error('Schedule tab not found (gid ' + SCHEDULE_SHEET_GID + '). Update SCHEDULE_SHEET_GID.');
+
+  var gid = gidParam ? parseInt(String(gidParam), 10) : SCHEDULE_SHEET_GID;
+  if (isNaN(gid)) gid = SCHEDULE_SHEET_GID;
+
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].getSheetId() === gid) return sheets[i];
+  }
+  throw new Error('Schedule tab not found (gid ' + gid + '). Update SCHEDULE_SHEET_GID or pass ?gid= / ?sheet=.');
 }
 
 function cellDisplay_(sheet, row, col) {
@@ -67,17 +80,18 @@ function cellDisplay_(sheet, row, col) {
 }
 
 function readMarkerRows_(sheet, startRow, endRow, timeCol, nameCol) {
-  const out = [];
-  const last = Math.min(endRow, sheet.getLastRow());
-  for (let r = startRow; r <= last; r++) {
-    const timeStr = cellDisplay_(sheet, r, timeCol);
-    const label = timeStr.toLowerCase();
+  var out = [];
+  var last = Math.min(endRow, sheet.getLastRow());
+  for (var r = startRow; r <= last; r++) {
+    var timeStr = cellDisplay_(sheet, r, timeCol);
+    var label = timeStr.toLowerCase();
     if (label === 'utc time difference' || label === 'utc time') break;
     if (!timeStr) continue;
-    out.push({
-      time: timeStr,
-      name: cellDisplay_(sheet, r, nameCol),
-    });
+    var name = cellDisplay_(sheet, r, nameCol);
+    if (!name && nameCol !== timeCol + 1) {
+      name = cellDisplay_(sheet, r, timeCol + 1);
+    }
+    out.push({ time: timeStr, name: name });
   }
   return out;
 }
