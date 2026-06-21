@@ -531,6 +531,7 @@ const TIMEZONE_CELL_ROW = 22 - 1;
 const TIMEZONE_VALUE_COLS = [21, 16, 17, 7, 8, 6];
 // Re-fetch published CSV this often (clock still updates every 1s).
 const SCHEDULE_REFRESH_MS = 3000;
+const TASK_LIST_AUTO_SCROLL = false;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 /** A/C race phases — first-race countdown and up-next races only (not the task list). */
@@ -1382,6 +1383,7 @@ function bindTaskTimersScroll(){
 }
 
 function scrollTaskListToFocus(focusStartSec, opts = {}){
+  if (!TASK_LIST_AUTO_SCROLL) return;
   const scrollEl = document.getElementById("taskTimersList");
   if (!scrollEl || focusStartSec == null) return;
 
