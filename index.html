@@ -474,11 +474,6 @@
 const SCHEDULE_API_URL = "https://script.google.com/macros/s/AKfycbxYjcbK7C212yBo5bvKeyh05mYlt2yzEg1mZOtmDcCgwaX7s9y0yM5LNdAqqgz7XHD8UQ/exec";
 /** Tab to read (from sheet URL …#gid=…). */
 const SCHEDULE_SHEET_GID = 43449268;
-/**
- * Only used if the sheet venue cell is empty or not recognized.
- * Normal operation uses E1 on the sheet (e.g. Portsmouth UK).
- */
-const DEFAULT_SCHEDULE_TZ = "America/New_York";
 function scheduleApiUrl(){
   const sep = SCHEDULE_API_URL.includes("?") ? "&" : "?";
   let url = `${SCHEDULE_API_URL}${sep}t=${Date.now()}`;
@@ -495,8 +490,8 @@ let raceDaySchedule = [];
 let windowEndSec = null; // sailing day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
 let eventDateKey = null; // YYYY-MM-DD from Q2
-/** IANA timezone from sheet venue cell; fallback DEFAULT_SCHEDULE_TZ only if missing/invalid. */
-let scheduleTz = DEFAULT_SCHEDULE_TZ;
+/** IANA timezone from sheet venue (E1). Null until a valid venue is loaded. */
+let scheduleTz = null;
 /** First race instant (ms) from Q2 + earliest Race row in A/C block; null if not set. */
 let firstRaceInstantMs = null;
 let firstRaceDateKey = null;
@@ -625,50 +620,8 @@ function cellInRow(row, col){
   return String(row[col] ?? "").trim();
 }
 
-function parseTimeZoneFromRows(rows){
-  if (!rows?.length) return { tz: DEFAULT_SCHEDULE_TZ, warning: "" };
-
-  const venueRow = rows[VENUE_CELL_ROW];
-  if (venueRow){
-    const tz = resolveTimeZone(cellInRow(venueRow, COL_VENUE));
-    if (tz) return { tz, warning: "" };
-  }
-
-  const fixed = rows[TIMEZONE_CELL_ROW];
-  if (fixed){
-    for (const c of TIMEZONE_VALUE_COLS){
-      const tz = resolveTimeZone(cellInRow(fixed, c));
-      if (tz) return { tz, warning: "" };
-    }
-  }
-
-  for (let i = 0; i < rows.length; i++){
-    const row = rows[i];
-    for (let j = 0; j < row.length; j++){
-      const label = cellInRow(row, j).toLowerCase();
-      if (label !== "timezone" && label !== "time zone" && label !== "location") continue;
-      const tryCols = [j + 1, j + 2, 7, 8, 6];
-      const seen = new Set();
-      for (const c of tryCols){
-        if (seen.has(c)) continue;
-        seen.add(c);
-        const tz = resolveTimeZone(cellInRow(row, c));
-        if (tz) return { tz, warning: "" };
-      }
-    }
-  }
-
-  let hadInvalid = false;
-  if (fixed){
-    for (const c of TIMEZONE_VALUE_COLS){
-      if (cellInRow(fixed, c)) hadInvalid = true;
-    }
-  }
-  const hadInvalidVenue = venueRow && cellInRow(venueRow, COL_VENUE);
-  const warning = (hadInvalid || hadInvalidVenue)
-    ? `Invalid timezone in V2 (e.g. America/Halifax or Halifax, Canada). Using ${DEFAULT_SCHEDULE_TZ}.`
-    : "";
-  return { tz: DEFAULT_SCHEDULE_TZ, warning };
+function parseTimeZoneFromRows(_rows){
+  return { tz: null, warning: "Missing timezone for venue" };
 }
 
 function getScheduleTzPartsFromMs(ms, tz = scheduleTz){
@@ -852,6 +805,7 @@ function isFridayInScheduleTz(d = new Date()){
 }
 
 function scheduleTzShortLabel(tz = scheduleTz){
+  if (!tz) return "—";
   try{
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone: tz,
@@ -860,7 +814,7 @@ function scheduleTzShortLabel(tz = scheduleTz){
     const name = parts.find(p => p.type === "timeZoneName")?.value;
     if (name) return name;
   } catch { /* fall through */ }
-  const seg = tz.split("/").pop() || tz;
+  const seg = String(tz).split("/").pop() || String(tz);
   return seg.replace(/_/g, " ");
 }
 
@@ -1151,13 +1105,11 @@ async function loadSchedule(){
     const tzCandidate = resolveTimeZone(venueRaw);
     let nextLoadError = "";
     if (!venueRaw){
-      nextLoadError =
-        `No venue in sheet (E1). Using ${DEFAULT_SCHEDULE_TZ}.`;
+      nextLoadError = "Missing timezone for venue";
     } else if (!tzCandidate){
-      nextLoadError =
-        `Unrecognized venue "${venueRaw}". Use a city name (e.g. New York, Halifax, Bermuda) or IANA zone (America/New_York). Using ${DEFAULT_SCHEDULE_TZ}.`;
+      nextLoadError = `Missing timezone for venue ("${venueRaw}")`;
     }
-    const nextScheduleTz = tzCandidate || DEFAULT_SCHEDULE_TZ;
+    const nextScheduleTz = tzCandidate || null;
 
     const nextEventDateKey = parseDateToKey(String(data?.eventDate ?? "").trim());
     if (!nextEventDateKey){
@@ -1556,12 +1508,28 @@ function renderPreEventPreview(ctx){
 }
 
 function render(){
+  document.getElementById("msg").textContent = loadError;
+
+  if (!scheduleTz){
+    document.getElementById("currentTimeLabel").textContent = "Current time";
+    document.getElementById("now").textContent = "--:--:--";
+    document.getElementById("nextTaskTime").textContent = "";
+    document.getElementById("nextTaskName").textContent = "—";
+    document.getElementById("nextTaskBox").classList.add("next-task-empty");
+    document.getElementById("taskTimersList").innerHTML = "";
+    lastTaskListStructureKey = "";
+    document.getElementById("raceCountdownTitle").textContent = "";
+    document.getElementById("raceCountdown").textContent = "--:--:--";
+    document.getElementById("raceCountdown").classList.remove("is-closed");
+    document.getElementById("upNextRaces").innerHTML = "";
+    if (!loadError) document.getElementById("msg").textContent = "Missing timezone for venue";
+    return;
+  }
+
   const ctx = scheduleNowContext(new Date());
   document.getElementById("currentTimeLabel").textContent =
     `Current time (${scheduleTzShortLabel()})`;
   document.getElementById("now").textContent = formatHMS(ctx.now);
-
-  document.getElementById("msg").textContent = loadError;
 
   const closed = isSailingWindowClosed(ctx.now);
   if (closed){
