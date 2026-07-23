@@ -677,7 +677,7 @@ function zonedWallClockToMs(dateKey, minOfDay, tz = scheduleTz){
 }
 
 function parseFirstRaceFromSchedule(markers, eventDateKey, tz = scheduleTz){
-  if (!eventDateKey || !markers?.length) return { ms: null, dateKey: null, minOfDay: null };
+  if (!eventDateKey || !tz || !markers?.length) return { ms: null, dateKey: null, minOfDay: null };
   const raceMarkers = markers
     .filter(m => isRaceName(m.name))
     .sort((a, b) => a.startMin - b.startMin);
