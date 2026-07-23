@@ -476,7 +476,7 @@ const SCHEDULE_API_URL = "https://script.google.com/macros/s/AKfycbxYjcbK7C212yB
 const SCHEDULE_SHEET_GID = 43449268;
 /**
  * Only used if the sheet venue cell is empty or not recognized.
- * Normal operation uses the venue from the sheet (next to "Venue" on row 1).
+ * Normal operation uses E1 on the sheet (e.g. Portsmouth UK).
  */
 const DEFAULT_SCHEDULE_TZ = "America/New_York";
 function scheduleApiUrl(){
@@ -553,6 +553,9 @@ const TZ_ALIASES = {
   // Europe / Middle East
   "london": "Europe/London",
   "uk": "Europe/London",
+  "portsmouth": "Europe/London",
+  "portsmouth uk": "Europe/London",
+  "portsmouth, uk": "Europe/London",
   "plymouth": "Europe/London",
   "cadiz": "Europe/Madrid",
   "cádiz": "Europe/Madrid",
@@ -1149,7 +1152,7 @@ async function loadSchedule(){
     let nextLoadError = "";
     if (!venueRaw){
       nextLoadError =
-        `No venue in sheet (row 1 next to "Venue"). Using ${DEFAULT_SCHEDULE_TZ}.`;
+        `No venue in sheet (E1). Using ${DEFAULT_SCHEDULE_TZ}.`;
     } else if (!tzCandidate){
       nextLoadError =
         `Unrecognized venue "${venueRaw}". Use a city name (e.g. New York, Halifax, Bermuda) or IANA zone (America/New_York). Using ${DEFAULT_SCHEDULE_TZ}.`;

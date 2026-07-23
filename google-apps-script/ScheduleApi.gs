@@ -13,8 +13,8 @@
  * - Per request: ?gid=43449268 or ?sheet=SUN%20NY on the /exec URL
  *
  * SHEET LAYOUT (TIMER SCHEDULE tab)
- *   Row 1:  "Date" | event date | "Venue" | venue name (e.g. New York)
- *           Also accepts B1 date / D1 or E1 venue if labels differ.
+ *   Row 1:  B1 event date   E1 venue (e.g. Portsmouth UK)
+ *           Also finds values next to "Date" / "Venue" labels if present.
  *   Row 2+: A = time (HH:MM)   C = task / event name (B used if C empty)
  *   Rows whose name matches “Race 1…” go to races[] as well as land[].
  */
@@ -22,8 +22,8 @@
 const SCHEDULE_SHEET_GID = 43449268;
 
 const ROW_META = 1;
-const COL_DATE = 2;   // B1 fallback
-const COL_VENUE = 4;  // D1 fallback (next to "Venue" label in C1)
+const COL_DATE = 2;   // B1
+const COL_VENUE = 5;  // E1
 
 const ROW_SCHEDULE_START = 2;
 const COL_TIME = 1;   // A
@@ -59,24 +59,28 @@ function doGet(e) {
 }
 
 /**
- * Prefer labeled cells on row 1 ("Date" / "Venue"), then fall back to B1 / D1 / E1.
+ * Venue is E1. Date is B1 (or cell after a "Date" label).
+ * If a "Venue" label exists and the next non-empty cell has a value, that wins only when E1 is empty.
  */
 function readMeta_(sheet) {
-  var eventDate = '';
-  var venue = '';
+  var eventDate = cellDisplay_(sheet, ROW_META, COL_DATE);
+  var venue = cellDisplay_(sheet, ROW_META, COL_VENUE); // E1 preferred
+
   for (var c = 1; c <= 12; c++) {
     var label = cellDisplay_(sheet, ROW_META, c).toLowerCase();
-    if (!eventDate && (label === 'date' || label === 'event date')) {
-      eventDate = cellDisplay_(sheet, ROW_META, c + 1);
+    if (label === 'date' || label === 'event date') {
+      var dateNext = cellDisplay_(sheet, ROW_META, c + 1);
+      if (dateNext) eventDate = dateNext;
     }
     if (!venue && (label === 'venue' || label === 'timezone' || label === 'time zone' || label === 'location' || label === 'tz')) {
-      venue = cellDisplay_(sheet, ROW_META, c + 1);
+      for (var n = c + 1; n <= c + 3; n++) {
+        var v = cellDisplay_(sheet, ROW_META, n);
+        if (v && v.toLowerCase() !== 'venue') {
+          venue = v;
+          break;
+        }
+      }
     }
-  }
-  if (!eventDate) eventDate = cellDisplay_(sheet, ROW_META, COL_DATE);
-  if (!venue) {
-    venue = cellDisplay_(sheet, ROW_META, COL_VENUE);
-    if (!venue) venue = cellDisplay_(sheet, ROW_META, 5); // E1
   }
   return { eventDate: eventDate, venue: venue };
 }
