@@ -413,6 +413,35 @@
       text-align: center;
       margin-top: clamp(0.65rem, 2.2vmin, 1.25rem);
     }
+    .label-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem 0.75rem;
+    }
+    .fleet-toggle {
+      display: inline-flex;
+      gap: 0.35rem;
+    }
+    .fleet-toggle button {
+      appearance: none;
+      border: 1px solid rgba(0, 33, 100, 0.28);
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--race-muted);
+      font: inherit;
+      font-size: clamp(11px, min(1.6vw, 1.9vh), 14px);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      padding: 0.28rem 0.65rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .fleet-toggle button[aria-pressed="true"] {
+      background: rgba(0, 33, 100, 0.14);
+      border-color: #002164;
+      color: #002164;
+    }
   </style>
 </head>
 <body>
@@ -445,7 +474,13 @@
           </div>
 
           <div class="box raceBox">
-            <div class="label">Countdown to next race</div>
+            <div class="label-row">
+              <div class="label">Countdown to next race</div>
+              <div class="fleet-toggle" role="group" aria-label="Our fleet">
+                <button type="button" id="fleetBtnA" data-fleet="A" aria-pressed="false">Fleet A</button>
+                <button type="button" id="fleetBtnB" data-fleet="B" aria-pressed="true">Fleet B</button>
+              </div>
+            </div>
             <div id="raceCountdownTitle" class="small muted race-countdown-title"></div>
             <div class="race-countdown-body">
               <div class="kpi">
@@ -456,7 +491,7 @@
         </div>
 
         <div class="box raceBox box-up-next">
-          <div class="label">Up next (races)</div>
+          <div class="label" id="upNextRacesLabel">Up next (races)</div>
           <div class="upnext-body">
             <div id="upNextRaces" class="small listBlock muted">Loading…</div>
           </div>
@@ -483,6 +518,55 @@ function scheduleApiUrl(){
 
 const SCHEDULE_REFRESH_MS = 3000;
 const TASK_LIST_AUTO_SCROLL = false;
+const FLEET_STORAGE_KEY = "sailgp-our-fleet";
+/** Our fleet for race countdown / up-next: "A" or "B". Toggle on the page. */
+let ourFleet = loadOurFleet();
+function loadOurFleet(){
+  try{
+    const v = String(localStorage.getItem(FLEET_STORAGE_KEY) || "B").toUpperCase();
+    return v === "A" || v === "B" ? v : "B";
+  } catch {
+    return "B";
+  }
+}
+function setOurFleet(fleet){
+  const next = String(fleet || "").toUpperCase() === "A" ? "A" : "B";
+  ourFleet = next;
+  try { localStorage.setItem(FLEET_STORAGE_KEY, next); } catch { /* ignore */ }
+  recomputeFirstRaceForFleet();
+  syncFleetToggleUi();
+  render();
+}
+function recomputeFirstRaceForFleet(){
+  const markers = raceDaySchedule.map(ev => ({
+    startMin: ev.startMin,
+    name: ev.name,
+    timeStr: ev.timeStr || "",
+  }));
+  const next = parseFirstRaceFromSchedule(markers, eventDateKey, scheduleTz);
+  firstRaceInstantMs = next.ms;
+  firstRaceDateKey = next.dateKey;
+  firstRaceMinOfDay = next.minOfDay;
+}
+function syncFleetToggleUi(){
+  for (const btn of document.querySelectorAll(".fleet-toggle [data-fleet]")){
+    const on = btn.getAttribute("data-fleet") === ourFleet;
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  const upLabel = document.getElementById("upNextRacesLabel");
+  if (upLabel) upLabel.textContent = `Up next (Fleet ${ourFleet} races)`;
+}
+function bindFleetToggle(){
+  const group = document.querySelector(".fleet-toggle");
+  if (!group || group.dataset.bound) return;
+  group.dataset.bound = "1";
+  group.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-fleet]");
+    if (!btn) return;
+    setOurFleet(btn.getAttribute("data-fleet"));
+  });
+  syncFleetToggleUi();
+}
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 /** A/C race phases — first-race countdown and up-next races only (not the task list). */
@@ -679,7 +763,7 @@ function zonedWallClockToMs(dateKey, minOfDay, tz = scheduleTz){
 function parseFirstRaceFromSchedule(markers, eventDateKey, tz = scheduleTz){
   if (!eventDateKey || !tz || !markers?.length) return { ms: null, dateKey: null, minOfDay: null };
   const raceMarkers = markers
-    .filter(m => isRaceName(m.name))
+    .filter(m => isOurFleetRace(m))
     .sort((a, b) => a.startMin - b.startMin);
   if (!raceMarkers.length) return { ms: null, dateKey: eventDateKey, minOfDay: null };
   const first = raceMarkers[0];
@@ -690,8 +774,26 @@ function parseFirstRaceFromSchedule(markers, eventDateKey, tz = scheduleTz){
   };
 }
 
+/** Race rows only: "Race N …" or "Final …" — not pit-lane lines that mention a race. */
 function isRaceName(name){
-  return /\brace\s*\d/i.test(String(name ?? "").trim());
+  const s = String(name ?? "").trim();
+  if (!s || /^pit\s*lane/i.test(s)) return false;
+  if (/^final\b/i.test(s)) return true;
+  return /^race\s*\d/i.test(s);
+}
+
+/** Fleet letter from names like "Race 5 (B3) - 14:05" → "B". Null if unlabeled (e.g. Final). */
+function raceFleetLetter(name){
+  const m = String(name ?? "").match(/\(([AB])\d*\)/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+/** Our fleet races, plus unlabeled finals. Other fleet’s (A#)/(B#) rows are skipped. */
+function isOurFleetRace(ev){
+  if (!isRaceName(ev.name)) return false;
+  const fleet = raceFleetLetter(ev.name);
+  if (!fleet) return true;
+  return fleet === ourFleet;
 }
 
 function collectScheduleMarkers(rows, startRow, colTime, colName, endRow){
@@ -1149,7 +1251,7 @@ async function loadSchedule(){
 // ---- RACE DETECTION RULE ----
 // Count actual race blocks (e.g. "Race 1 (A1)…"), not pit-lane rows like "Pit lane - Race 2…".
 function isRace(ev){
-  return isRaceName(ev.name);
+  return isOurFleetRace(ev);
 }
 
 /**
@@ -1623,6 +1725,7 @@ async function tick(){
 }
 
 (async function init(){
+  bindFleetToggle();
   bindTaskTimersScroll();
   if (!SCHEDULE_API_URL){
     document.getElementById("msg").textContent =
