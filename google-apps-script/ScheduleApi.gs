@@ -5,24 +5,25 @@
  * 1. Open your Google Sheet → Extensions → Apps Script
  * 2. Add this as ScheduleApi.gs (keep your onEdit in Code.gs)
  * 3. Deploy → New deployment → Web app (Execute as: Me, Who has access: Anyone)
- * 4. Copy the /exec URL into index-live.html → SCHEDULE_API_URL
+ * 4. Copy the /exec URL into index.html → SCHEDULE_API_URL
+ * 5. After ANY script change: Deploy → Manage deployments → Edit → New version → Deploy
  *
- * TAB SELECTION (pick one)
+ * TAB SELECTION
  * - Default: SCHEDULE_SHEET_GID below (from tab URL …#gid=43449268)
  * - Per request: ?gid=43449268 or ?sheet=SUN%20NY on the /exec URL
- * - index-live.html can pass SCHEDULE_SHEET_GID on each poll
  *
- * SHEET LAYOUT (per-day tabs, e.g. SUN NY, SUN HFX)
- *   Row 1:  B1 event date (e.g. 21/06/2026)   E1 venue (e.g. New York)
- *   Row 2+:  A = time (HH:MM)                 C = task / event name
+ * SHEET LAYOUT (TIMER SCHEDULE tab)
+ *   Row 1:  "Date" | event date | "Venue" | venue name (e.g. New York)
+ *           Also accepts B1 date / D1 or E1 venue if labels differ.
+ *   Row 2+: A = time (HH:MM)   C = task / event name (B used if C empty)
  *   Rows whose name matches “Race 1…” go to races[] as well as land[].
  */
 
 const SCHEDULE_SHEET_GID = 43449268;
 
 const ROW_META = 1;
-const COL_DATE = 2;   // B1
-const COL_VENUE = 5;  // E1
+const COL_DATE = 2;   // B1 fallback
+const COL_VENUE = 4;  // D1 fallback (next to "Venue" label in C1)
 
 const ROW_SCHEDULE_START = 2;
 const COL_TIME = 1;   // A
@@ -32,6 +33,7 @@ function doGet(e) {
   try {
     var params = (e && e.parameter) ? e.parameter : {};
     var sheet = getScheduleSheet_(params.gid, params.sheet);
+    var meta = readMeta_(sheet);
     var all = readMarkerRows_(sheet, ROW_SCHEDULE_START, sheet.getLastRow(), COL_TIME, COL_NAME);
     var races = all.filter(function(row) {
       return /\brace\s*\d/i.test(String(row.name || ''));
@@ -41,8 +43,8 @@ function doGet(e) {
       updatedAt: new Date().toISOString(),
       sheetGid: sheet.getSheetId(),
       sheetName: sheet.getName(),
-      eventDate: cellDisplay_(sheet, ROW_META, COL_DATE),
-      venue: cellDisplay_(sheet, ROW_META, COL_VENUE),
+      eventDate: meta.eventDate,
+      venue: meta.venue,
       land: all,
       races: races,
     };
@@ -54,6 +56,29 @@ function doGet(e) {
       updatedAt: new Date().toISOString(),
     });
   }
+}
+
+/**
+ * Prefer labeled cells on row 1 ("Date" / "Venue"), then fall back to B1 / D1 / E1.
+ */
+function readMeta_(sheet) {
+  var eventDate = '';
+  var venue = '';
+  for (var c = 1; c <= 12; c++) {
+    var label = cellDisplay_(sheet, ROW_META, c).toLowerCase();
+    if (!eventDate && (label === 'date' || label === 'event date')) {
+      eventDate = cellDisplay_(sheet, ROW_META, c + 1);
+    }
+    if (!venue && (label === 'venue' || label === 'timezone' || label === 'time zone' || label === 'location' || label === 'tz')) {
+      venue = cellDisplay_(sheet, ROW_META, c + 1);
+    }
+  }
+  if (!eventDate) eventDate = cellDisplay_(sheet, ROW_META, COL_DATE);
+  if (!venue) {
+    venue = cellDisplay_(sheet, ROW_META, COL_VENUE);
+    if (!venue) venue = cellDisplay_(sheet, ROW_META, 5); // E1
+  }
+  return { eventDate: eventDate, venue: venue };
 }
 
 function getScheduleSheet_(gidParam, nameParam) {
