@@ -1413,8 +1413,8 @@ function renderPreEventPreview(ctx){
   const deltaSec = firstRaceInstantMs != null
     ? Math.max(0, Math.floor((firstRaceInstantMs - ctx.nowMs) / 1000))
     : 0;
-  const venueTodayKey = ctx.dateKey;
-  const nextTaskStartSec = nextTaskStartSecOnDay(schedule, ctx, venueTodayKey);
+  const previewDayKey = eventDateKey || ctx.dateKey;
+  const nextTaskStartSec = nextTaskStartSecOnDay(schedule, ctx, previewDayKey);
   const nextTask = findEventByStartSec(nextTaskStartSec);
 
   if (nextTask){
@@ -1427,7 +1427,7 @@ function renderPreEventPreview(ctx){
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
   }
 
-  refreshTaskTimersList(schedule, ctx, null, nextTaskStartSec, venueTodayKey);
+  refreshTaskTimersList(schedule, ctx, null, nextTaskStartSec, previewDayKey);
 
   const raceCd = document.getElementById("raceCountdown");
   if (firstRaceInstantMs != null){
