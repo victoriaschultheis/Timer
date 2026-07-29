@@ -483,10 +483,10 @@ function scheduleApiUrl(){
 
 const SCHEDULE_REFRESH_MS = 3000;
 const SCHEDULE_FETCH_TIMEOUT_MS = 4000;
-const TASK_LIST_AUTO_SCROLL = false;
+const TASK_LIST_AUTO_SCROLL = true;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
-/** A/C race phases — first-race countdown and up-next races only (not the task list). */
+/** Race phases — first-race countdown and up-next races only (not the task list). */
 let raceDaySchedule = [];
 let windowEndSec = null; // schedule day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
@@ -614,11 +614,6 @@ function resolveTimeZone(raw){
   const candidate = normalizeTimeZoneInput(raw);
   if (!candidate || !isValidTimeZone(candidate)) return null;
   return candidate;
-}
-
-function cellInRow(row, col){
-  if (!row || col < 0 || col >= row.length) return "";
-  return String(row[col] ?? "").trim();
 }
 
 function getScheduleTzPartsFromMs(ms, tz = scheduleTz){
@@ -764,29 +759,19 @@ function scheduleNowContext(d = new Date()){
   const p = getScheduleTzPartsFull(d);
   const nowSec = p.hour * 3600 + p.minute * 60 + p.second;
   const dateKey = dateKeyFromTzParts(p);
-  const weekdayShort = new Intl.DateTimeFormat("en-US", {
-    timeZone: scheduleTz,
-    weekday: "short",
-  }).format(d);
   return {
     now: d,
     nowMs: d.getTime(),
     nowSec,
     dateKey,
-    weekdayShort,
-    isFriday: weekdayShort === "Fri",
   };
 }
 
-/** Before the event date: preview today's schedule in the venue timezone. */
+/** Before the event date: preview the event-day schedule in the venue timezone. */
 function isPreEventPreviewMode(now = new Date()){
   if (!eventDateKey) return false;
   const ctx = scheduleNowContext(now);
   return ctx.dateKey < eventDateKey;
-}
-
-function isFridayInScheduleTz(d = new Date()){
-  return scheduleNowContext(d).isFriday;
 }
 
 function scheduleTzShortLabel(tz = scheduleTz){
