@@ -488,12 +488,12 @@ const TASK_LIST_AUTO_SCROLL = false;
 let schedule = [];
 /** A/C race phases — first-race countdown and up-next races only (not the task list). */
 let raceDaySchedule = [];
-let windowEndSec = null; // sailing day ends at this second-of-day (venue TZ)
+let windowEndSec = null; // schedule day ends at this second-of-day (venue TZ)
 let lastFetchMs = 0;
-let eventDateKey = null; // YYYY-MM-DD from Q2
+let eventDateKey = null; // YYYY-MM-DD from the sheet date cell
 /** IANA timezone from sheet venue (E1). Null until a valid venue is loaded. */
 let scheduleTz = null;
-/** First race instant (ms) from Q2 + earliest Race row in A/C block; null if not set. */
+/** First race instant (ms) from the current schedule day; null if not set. */
 let firstRaceInstantMs = null;
 let firstRaceDateKey = null;
 let firstRaceMinOfDay = null;
@@ -621,10 +621,6 @@ function cellInRow(row, col){
   return String(row[col] ?? "").trim();
 }
 
-function parseTimeZoneFromRows(_rows){
-  return { tz: null, warning: "Missing timezone for venue" };
-}
-
 function getScheduleTzPartsFromMs(ms, tz = scheduleTz){
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
@@ -697,22 +693,6 @@ function isRaceName(name){
   if (!s || /^pit\s*lane/i.test(s)) return false;
   if (/^final\b/i.test(s)) return true;
   return /^race\s*\d/i.test(s);
-}
-
-function collectScheduleMarkers(rows, startRow, colTime, colName, endRow){
-  const markers = [];
-  const limit = Math.min(endRow ?? rows.length, rows.length);
-  for (let r = startRow; r < limit; r++){
-    const row = rows[r];
-    const timeCell = cellInRow(row, colTime);
-    const label = timeCell.toLowerCase();
-    if (label === "utc time difference" || label === "utc time") break;
-    const name = cellInRow(row, colName);
-    const startMin = parseTimeToMinutes(timeCell);
-    if (startMin === null) continue;
-    markers.push({ startMin, name, timeStr: timeCell });
-  }
-  return markers;
 }
 
 function mergeScheduleMarkers(markers){
@@ -798,7 +778,7 @@ function scheduleNowContext(d = new Date()){
   };
 }
 
-/** Before event day (Q2): preview Q/R land schedule on venue “today”. */
+/** Before the event date: preview today's schedule in the venue timezone. */
 function isPreEventPreviewMode(now = new Date()){
   if (!eventDateKey) return false;
   const ctx = scheduleNowContext(now);
@@ -919,7 +899,7 @@ function parseDateToKey(s){
   const isoInText = raw.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoInText) return `${isoInText[1]}-${isoInText[2]}-${isoInText[3]}`;
 
-  // Plain serial day number from CSV (no meaningful time fraction)
+  // Plain serial day number from Sheets/Excel (no meaningful time fraction)
   const asNum = Number(raw.replace(",", "."));
   if (!Number.isNaN(asNum) && asNum >= 1 && asNum < 80000){
     const day = Math.round(asNum);
@@ -929,18 +909,6 @@ function parseDateToKey(s){
     }
   }
 
-  return null;
-}
-
-function parseEventDateFromRows(rows){
-  if (!rows?.length) return null;
-  const r = rows[DATE_CELL_ROW];
-  if (r){
-    for (const c of DATE_VALUE_COLS){
-      const key = parseDateToKey(r[c]);
-      if (key) return key;
-    }
-  }
   return null;
 }
 
@@ -987,48 +955,8 @@ function parseTimeToMinutes(s){
   return null;
 }
 
-function parseCSV(text){
-  text = text.replace(/^\uFEFF/, "");
-
-  const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) || "";
-  const commaCount = (firstLine.match(/,/g) || []).length;
-  const semiCount  = (firstLine.match(/;/g) || []).length;
-  const delim = semiCount > commaCount ? ";" : ",";
-
-  const rows = [];
-  let row = [], cell = "", inQ = false;
-
-  for (let i=0; i<text.length; i++){
-    const c = text[i];
-    const n = text[i+1];
-
-    if (inQ){
-      if (c === '"' && n === '"'){ cell += '"'; i++; }
-      else if (c === '"'){ inQ = false; }
-      else { cell += c; }
-    } else {
-      if (c === '"'){ inQ = true; }
-      else if (c === delim){ row.push(cell); cell = ""; }
-      else if (c === '\n'){ row.push(cell); rows.push(row); row = []; cell = ""; }
-      else if (c === '\r'){ /* ignore */ }
-      else { cell += c; }
-    }
-  }
-  row.push(cell);
-  rows.push(row);
-  return rows;
-}
-
 function scheduleSnapshotKey(ev){
   return `${ev.startSec}|${ev.endSec}|${ev.name}|${ev.timeStr}`;
-}
-
-function schedulesEqual(a, b){
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++){
-    if (scheduleSnapshotKey(a[i]) !== scheduleSnapshotKey(b[i])) return false;
-  }
-  return true;
 }
 
 function computeScheduleFingerprint(tz, eventDateKey, windowEndSec, firstRaceMs, sched, raceSched, err){
@@ -1041,11 +969,6 @@ function computeScheduleFingerprint(tz, eventDateKey, windowEndSec, firstRaceMs,
     phases: sched.map(scheduleSnapshotKey),
     racePhases: raceSched.map(scheduleSnapshotKey),
   });
-}
-
-/** Stable string for comparing published CSV bodies (line endings differ between responses). */
-function normalizeCsvBody(s){
-  return String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
 }
 
 function markersFromApiList(list){
@@ -1475,7 +1398,7 @@ function findEventByStartSec(startSec){
   return schedule.find(ev => ev.startSec === startSec) ?? null;
 }
 
-/** Races on event day (A/C block) still in the future — for pre-event “Up next”. */
+/** Races on the event date still in the future — for pre-event “Up next”. */
 function upcomingRacesOnFirstRaceDay(ctx){
   if (!firstRaceDateKey) return [];
   const races = dedupeRacePhasesByLogicalRace(
@@ -1531,6 +1454,20 @@ function render(){
   document.getElementById("msg").textContent = loadError;
 
   if (!scheduleTz){
+    if (scheduleLoadPromise && !loadError){
+      document.getElementById("currentTimeLabel").textContent = "Current time";
+      document.getElementById("now").textContent = "--:--:--";
+      document.getElementById("nextTaskTime").textContent = "";
+      document.getElementById("nextTaskName").textContent = "—";
+      document.getElementById("nextTaskBox").classList.add("next-task-empty");
+      document.getElementById("taskTimersList").innerHTML = "";
+      lastTaskListStructureKey = "";
+      document.getElementById("raceCountdownTitle").textContent = "";
+      document.getElementById("raceCountdown").textContent = "--:--:--";
+      document.getElementById("raceCountdown").classList.remove("is-closed");
+      document.getElementById("upNextRaces").innerHTML = "";
+      return;
+    }
     document.getElementById("currentTimeLabel").textContent = "Current time";
     document.getElementById("now").textContent = "--:--:--";
     document.getElementById("nextTaskTime").textContent = "";
