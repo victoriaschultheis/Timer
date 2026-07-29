@@ -483,7 +483,7 @@ function scheduleApiUrl(){
 
 const SCHEDULE_REFRESH_MS = 3000;
 const SCHEDULE_FETCH_TIMEOUT_MS = 4000;
-const TASK_LIST_AUTO_SCROLL = true;
+const TASK_LIST_AUTO_SCROLL = false;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
 /** Race phases — first-race countdown and up-next races only (not the task list). */
@@ -1325,6 +1325,11 @@ function updateTaskListCountdownsInPlace(schedule, listCtx){
   const scrollEl = document.getElementById("taskTimersList");
   if (!scrollEl) return;
   for (const ev of schedule){
+    if (getTaskPhase(ev, listCtx) === "ended"){
+      const stale = scrollEl.querySelector(`[data-start-sec="${ev.startSec}"]`);
+      if (stale) stale.remove();
+      continue;
+    }
     const row = scrollEl.querySelector(`[data-start-sec="${ev.startSec}"]`);
     if (!row) continue;
     const display = computeTaskRowDisplay(ev, listCtx);
@@ -1334,13 +1339,20 @@ function updateTaskListCountdownsInPlace(schedule, listCtx){
     nums.className = `task-timer-nums nums${display.numsExtraClass}`;
     nums.innerHTML = display.cd;
   }
+  if (!scrollEl.querySelector(".task-timer-row") && !scrollEl.querySelector(".task-timers-empty")){
+    scrollEl.innerHTML = "<div class=\"task-timers-empty\">No upcoming tasks</div>";
+  }
 }
 
 function buildTaskTimersHtml(schedule, listCtx){
   if (!schedule.length){
     return "<div class=\"task-timers-empty\">No tasks loaded</div>";
   }
-  return schedule.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, listCtx))).join("");
+  const visible = schedule.filter(ev => getTaskPhase(ev, listCtx) !== "ended");
+  if (!visible.length){
+    return "<div class=\"task-timers-empty\">No upcoming tasks</div>";
+  }
+  return visible.map(ev => taskTimerRowHtml(ev, computeTaskRowDisplay(ev, listCtx))).join("");
 }
 
 function refreshTaskTimersList(schedule, ctx, activeEv, _nextTaskStartSec, previewDayKey){
