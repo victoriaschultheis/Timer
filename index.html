@@ -482,6 +482,7 @@ function scheduleApiUrl(){
 }
 
 const SCHEDULE_REFRESH_MS = 3000;
+const SCHEDULE_FETCH_TIMEOUT_MS = 1500;
 const TASK_LIST_AUTO_SCROLL = false;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
@@ -1099,7 +1100,18 @@ async function loadSchedule(){
       return;
     }
 
-    const res = await fetch(scheduleApiUrl(), { cache: "no-store", redirect: "follow" });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SCHEDULE_FETCH_TIMEOUT_MS);
+    let res;
+    try{
+      res = await fetch(scheduleApiUrl(), {
+        cache: "no-store",
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     if (!res.ok) throw new Error(`Schedule API failed: ${res.status} ${res.statusText}`);
 
     const data = await res.json();
@@ -1139,7 +1151,11 @@ async function loadSchedule(){
       nextFirstRace
     );
   } catch (e){
-    loadError = e?.message ? String(e.message) : "Couldn't load schedule from API";
+    if (e?.name === "AbortError"){
+      loadError = "Schedule refresh timed out; retrying...";
+    } else {
+      loadError = e?.message ? String(e.message) : "Couldn't load schedule from API";
+    }
   }
   })();
 
@@ -1618,11 +1634,15 @@ function render(){
   }
 }
 
-async function tick(){
+function requestScheduleRefresh(nowMs = Date.now()){
+  if (scheduleLoadPromise) return;
+  if (lastFetchMs && (nowMs - lastFetchMs) <= SCHEDULE_REFRESH_MS) return;
+  loadSchedule();
+}
+
+function tick(){
   const nowMs = Date.now();
-  if (!lastFetchMs || (nowMs - lastFetchMs) > SCHEDULE_REFRESH_MS){
-    await loadSchedule();
-  }
+  requestScheduleRefresh(nowMs);
   render();
 }
 
@@ -1632,7 +1652,7 @@ async function tick(){
     document.getElementById("msg").textContent =
       "Set SCHEDULE_API_URL to your Apps Script /exec URL.";
   } else {
-    await loadSchedule();
+    loadSchedule();
   }
   tick();
   setInterval(tick, 1000);
