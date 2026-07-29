@@ -1640,10 +1640,20 @@ function requestScheduleRefresh(nowMs = Date.now()){
   loadSchedule();
 }
 
+let tickTimeoutId = null;
+let scheduleRefreshIntervalId = null;
+
 function tick(){
-  const nowMs = Date.now();
-  requestScheduleRefresh(nowMs);
   render();
+}
+
+function scheduleNextTick(){
+  if (tickTimeoutId != null) clearTimeout(tickTimeoutId);
+  const delayMs = Math.max(20, 1000 - (Date.now() % 1000) + 10);
+  tickTimeoutId = setTimeout(() => {
+    tick();
+    scheduleNextTick();
+  }, delayMs);
 }
 
 (async function init(){
@@ -1653,9 +1663,12 @@ function tick(){
       "Set SCHEDULE_API_URL to your Apps Script /exec URL.";
   } else {
     loadSchedule();
+    scheduleRefreshIntervalId = setInterval(() => {
+      requestScheduleRefresh();
+    }, SCHEDULE_REFRESH_MS);
   }
   tick();
-  setInterval(tick, 1000);
+  scheduleNextTick();
 })();
 </script>
 </body>
