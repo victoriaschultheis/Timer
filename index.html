@@ -1152,9 +1152,7 @@ async function loadSchedule(){
     );
   } catch (e){
     if (e?.name === "AbortError"){
-      if (!schedule.length && !raceDaySchedule.length){
-        loadError = "Schedule refresh timed out; retrying...";
-      }
+      if (loadError === "Schedule refresh timed out; retrying...") loadError = "";
     } else {
       loadError = e?.message ? String(e.message) : "Couldn't load schedule from API";
     }
