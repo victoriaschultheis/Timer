@@ -482,7 +482,7 @@ function scheduleApiUrl(){
 }
 
 const SCHEDULE_REFRESH_MS = 3000;
-const SCHEDULE_FETCH_TIMEOUT_MS = 1500;
+const SCHEDULE_FETCH_TIMEOUT_MS = 4000;
 const TASK_LIST_AUTO_SCROLL = false;
 /** @type {{ startSec: number, endSec: number, startMin: number, name: string, timeStr: string }[]} */
 let schedule = [];
@@ -1152,7 +1152,9 @@ async function loadSchedule(){
     );
   } catch (e){
     if (e?.name === "AbortError"){
-      loadError = "Schedule refresh timed out; retrying...";
+      if (!schedule.length && !raceDaySchedule.length){
+        loadError = "Schedule refresh timed out; retrying...";
+      }
     } else {
       loadError = e?.message ? String(e.message) : "Couldn't load schedule from API";
     }
