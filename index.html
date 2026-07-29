@@ -114,7 +114,24 @@
       min-height: 0;
     }
     .pair-row .box-current-time > .slot-mid {
+      flex: 0 0 auto;
+    }
+    .box-current-time > .current-task-body {
       flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 0.4rem;
+      width: 100%;
+    }
+    .box-current-time .current-task-name {
+      text-align: center;
+      max-width: 100%;
+      line-height: 1.25;
+      font-weight: 600;
+      word-break: break-word;
     }
     .box-next-task > .next-task-body {
       flex: 1 1 auto;
@@ -425,7 +442,10 @@
         <div class="grid2 pair-row">
           <div class="box box-current-time">
             <div class="label" id="currentTimeLabel">Current time</div>
-            <div class="slot-mid"><div id="now" class="mid nums midW">00:00:00</div></div>
+            <div class="current-task-body">
+              <div class="slot-mid"><div id="now" class="mid nums midW">00:00:00</div></div>
+              <div id="currentTaskName" class="small muted current-task-name">—</div>
+            </div>
           </div>
 
           <div class="box box-next-task" id="nextTaskBox">
@@ -1160,6 +1180,12 @@ function findActive(now){
   return null;
 }
 
+function setCurrentTaskName(active){
+  const el = document.getElementById("currentTaskName");
+  if (!el) return;
+  el.textContent = active?.name ? active.name : "—";
+}
+
 function getTaskPhaseByTime(ev, ctx){
   const { nowSec, nowMs, dayKey } = ctx;
   if (dayKey){
@@ -1414,6 +1440,8 @@ function renderPreEventPreview(ctx){
   const nextTaskStartSec = nextTaskStartSecOnDay(schedule, ctx, previewDayKey);
   const nextTask = findEventByStartSec(nextTaskStartSec);
 
+  setCurrentTaskName(null);
+
   if (nextTask){
     document.getElementById("nextTaskTime").textContent = formatHMfromSeconds(nextTask.startSec);
     document.getElementById("nextTaskName").textContent = nextTask.name ? nextTask.name : "—";
@@ -1454,6 +1482,7 @@ function render(){
     if (scheduleLoadPromise && !loadError){
       document.getElementById("currentTimeLabel").textContent = "Current time";
       document.getElementById("now").textContent = "--:--:--";
+      setCurrentTaskName(null);
       document.getElementById("nextTaskTime").textContent = "";
       document.getElementById("nextTaskName").textContent = "—";
       document.getElementById("nextTaskBox").classList.add("next-task-empty");
@@ -1467,6 +1496,7 @@ function render(){
     }
     document.getElementById("currentTimeLabel").textContent = "Current time";
     document.getElementById("now").textContent = "--:--:--";
+    setCurrentTaskName(null);
     document.getElementById("nextTaskTime").textContent = "";
     document.getElementById("nextTaskName").textContent = "—";
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
@@ -1487,6 +1517,7 @@ function render(){
 
   const closed = isSailingWindowClosed(ctx.now);
   if (closed){
+    setCurrentTaskName(null);
     document.getElementById("nextTaskTime").textContent = "";
     document.getElementById("nextTaskName").textContent = "—";
     document.getElementById("nextTaskBox").classList.add("next-task-empty");
@@ -1528,6 +1559,7 @@ function render(){
   }
 
   const active = findActive(ctx.now);
+  setCurrentTaskName(active);
   const nextTaskStartSec = taskChain.length ? taskChain[0].startSec : null;
   refreshTaskTimersList(schedule, ctx, active, nextTaskStartSec, null);
 
