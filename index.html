@@ -126,13 +126,6 @@
       gap: 0.4rem;
       width: 100%;
     }
-    .box-current-time .current-task-name {
-      text-align: center;
-      max-width: 100%;
-      line-height: 1.25;
-      font-weight: 600;
-      word-break: break-word;
-    }
     .box-next-task > .next-task-body {
       flex: 1 1 auto;
       min-height: 0;
@@ -324,7 +317,8 @@
     #raceCountdownTitle {
       text-align: center;
     }
-    #nextTaskName {
+    #nextTaskName,
+    #currentTaskName {
       width: 100%;
       text-align: center;
     }
@@ -444,7 +438,7 @@
             <div class="label" id="currentTimeLabel">Current time</div>
             <div class="current-task-body">
               <div class="slot-mid"><div id="now" class="mid nums midW">00:00:00</div></div>
-              <div id="currentTaskName" class="small muted current-task-name">—</div>
+              <div id="currentTaskName" class="small muted next-task-meta">—</div>
             </div>
           </div>
 
